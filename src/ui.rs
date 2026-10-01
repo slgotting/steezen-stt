@@ -12,6 +12,7 @@ const ACCENT: Color32 = Color32::from_rgb(99, 102, 241);
 const RED: Color32 = Color32::from_rgb(230, 57, 70);
 const AMBER: Color32 = Color32::from_rgb(245, 166, 35);
 const MUTED: Color32 = Color32::from_rgb(150, 150, 160);
+const PADDING: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -164,7 +165,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("nav").show(ui, |ui| {
+        egui::Panel::top("nav").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(PADDING)).show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("whisper-hook").strong().size(18.0));
@@ -177,7 +178,7 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
         });
-        egui::CentralPanel::default().show(ui, |ui| match self.page {
+        egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(PADDING)).show(ui, |ui| match self.page {
             Page::Home => self.home(ui),
             Page::History => self.history(ui),
             Page::Settings => self.settings(ui),
@@ -313,7 +314,7 @@ impl App {
     }
 
     fn settings(&mut self, ui: &mut Ui) {
-        egui::Panel::left("sections").resizable(false).exact_size(190.0).show(ui, |ui| {
+        egui::Panel::left("sections").resizable(false).exact_size(190.0).frame(egui::Frame::NONE.inner_margin(egui::Margin { right: 8, ..Default::default() })).show(ui, |ui| {
             ui.add_space(4.0);
             for (section, label) in SECTIONS {
                 if ui.selectable_label(self.section == section, label).clicked() {
@@ -321,7 +322,7 @@ impl App {
                 }
             }
         });
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 8, ..Default::default() }).show(ui, |ui| egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(4.0);
             match self.section {
                 Section::Transcription => self.transcription_settings(ui),
@@ -334,7 +335,7 @@ impl App {
                 Section::General => self.general_settings(ui),
             }
             ui.add_space(24.0);
-        });
+        }));
     }
 
     fn transcription_settings(&mut self, ui: &mut Ui) {
@@ -506,12 +507,19 @@ impl App {
         ui.separator();
         let mut remove = None;
         for (i, rule) in self.draft.dictionary.iter_mut().enumerate() {
-            let title = format!("{}  {}  ←  {}", if rule.enabled { "●" } else { "○" }, rule.word, rule.triggers);
-            egui::CollapsingHeader::new(title).id_salt(("rule", i)).show(ui, |ui| {
-                if rule_editor(ui, rule, i) {
-                    remove = Some(i);
-                }
-            });
+            let id = ui.make_persistent_id(("rule", i));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+                .show_header(ui, |ui| {
+                    ui.checkbox(&mut rule.enabled, "");
+                    let word = if rule.word.trim().is_empty() { "(new word)" } else { rule.word.as_str() };
+                    ui.label(RichText::new(word).strong());
+                    ui.label(RichText::new(format!("misheard as {}", rule.triggers)).color(MUTED));
+                })
+                .body(|ui| {
+                    if rule_editor(ui, rule, i) {
+                        remove = Some(i);
+                    }
+                });
         }
         if let Some(i) = remove {
             self.draft.dictionary.remove(i);
@@ -648,10 +656,8 @@ fn model_combo(ui: &mut Ui, shared: &Shared, s: &mut Settings, installed: &[Stri
 
 fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize) -> bool {
     let mut remove = false;
+    let field = (ui.available_width() - 110.0).max(200.0);
     egui::Grid::new(("rule-grid", i)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-        ui.label("Enabled");
-        ui.checkbox(&mut rule.enabled, "");
-        ui.end_row();
         ui.label("Correct word");
         ui.add(egui::TextEdit::singleline(&mut rule.word).desired_width(200.0).hint_text("e.g. Claude"));
         ui.end_row();
@@ -659,10 +665,10 @@ fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize) -> bool {
         ui.add(egui::TextEdit::singleline(&mut rule.triggers).desired_width(360.0).hint_text("comma-separated: cloud, clawed"));
         ui.end_row();
         ui.label("Means");
-        ui.add(egui::TextEdit::singleline(&mut rule.meaning).desired_width(f32::INFINITY).hint_text("what the correct word refers to"));
+        ui.add(egui::TextEdit::singleline(&mut rule.meaning).desired_width(field).hint_text("what the correct word refers to"));
         ui.end_row();
         ui.label("Background");
-        ui.add(egui::TextEdit::multiline(&mut rule.context).desired_rows(2).desired_width(f32::INFINITY).hint_text("context that helps tell the meanings apart"));
+        ui.add(egui::TextEdit::multiline(&mut rule.context).desired_rows(2).desired_width(field).hint_text("context that helps tell the meanings apart"));
         ui.end_row();
         ui.label("Threshold");
         ui.add(egui::Slider::new(&mut rule.threshold, 0.0..=1.0));
