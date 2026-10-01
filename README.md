@@ -25,7 +25,9 @@ The toolchain is pinned in `rust-toolchain.toml`. Dependency versions are pinned
 
 ## Use
 
-Run `target/release/whisper-hook`. Hold **Alt+Shift+D**, speak, release. The text is pasted into the focused window.
+Run `whisper-hook` (symlinked from `~/bin` to `target/release/whisper-hook`, so rebuilds take effect immediately). Running it again while it is open, even when hidden in the tray, brings the existing window to the front instead of starting a second copy.
+
+Hold **Alt+Shift+D**, speak, release. The text is pasted into the focused window.
 Everything is configured in **Settings**; changes save automatically to `~/.config/whisper-hook/settings.json` (mode 600).
 
 | Section | What it does |

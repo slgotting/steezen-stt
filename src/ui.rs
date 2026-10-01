@@ -74,6 +74,7 @@ pub struct App {
     shared: Arc<Shared>,
     draft: Settings,
     dirty_since: Option<Instant>,
+    hide_on_start: bool,
     page: Page,
     section: Section,
     hotkeys: Hotkeys,
@@ -99,6 +100,7 @@ impl App {
             shared.refresh_models(p);
         }
         Self {
+            hide_on_start: draft.start_hidden,
             draft,
             dirty_since: None,
             page: Page::Home,
@@ -154,6 +156,9 @@ fn style(ctx: &egui::Context) {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tray.update(self.shared.phase());
+        if std::mem::take(&mut self.hide_on_start) {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        }
         if ctx.input(|i| i.viewport().close_requested()) && self.draft.close_to_tray && !tray::QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
