@@ -8,6 +8,7 @@ mod hotkeys;
 mod instance;
 mod output;
 mod settings;
+mod theme;
 mod transcribe;
 mod tray;
 mod ui;
