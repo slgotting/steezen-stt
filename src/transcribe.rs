@@ -202,7 +202,7 @@ mod tests {
         let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
         let channels = u16::from_le_bytes(bytes[22..24].try_into().unwrap()) as usize;
         let data = bytes.windows(4).position(|w| w == b"data").unwrap() + 8;
-        let samples: Vec<f32> = bytes[data..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / i16::MAX as f32).collect();
+        let samples: Vec<f32> = bytes[data..].as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c) as f32 / i16::MAX as f32).collect();
         (samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect(), rate)
     }
 
