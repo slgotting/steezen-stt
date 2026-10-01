@@ -78,7 +78,6 @@ pub struct App {
     page: Page,
     section: Section,
     hotkeys: Hotkeys,
-    hotkey_errors: Vec<String>,
     tray: Tray,
     devices: Vec<String>,
     capturing: Option<usize>,
@@ -94,7 +93,7 @@ impl App {
         style(&cc.egui_ctx);
         let draft = shared.settings();
         let mut hotkeys = Hotkeys::new(shared.clone());
-        let hotkey_errors = hotkeys.sync(&draft);
+        hotkeys.sync(&draft);
         let tray = Tray::new(shared.clone());
         for p in Provider::ALL {
             shared.refresh_models(p);
@@ -106,7 +105,6 @@ impl App {
             page: Page::Home,
             section: Section::Transcription,
             hotkeys,
-            hotkey_errors,
             tray,
             devices: crate::audio::input_devices(),
             capturing: None,
@@ -122,10 +120,7 @@ impl App {
         if *self.shared.settings.read().unwrap() != self.draft {
             *self.shared.settings.write().unwrap() = self.draft.clone();
             self.dirty_since = Some(Instant::now());
-            let errors = self.hotkeys.sync(&self.draft);
-            if !errors.is_empty() || !self.hotkey_errors.is_empty() {
-                self.hotkey_errors = errors;
-            }
+            self.hotkeys.sync(&self.draft);
         }
         if let Some(t) = self.dirty_since {
             if t.elapsed() >= Duration::from_millis(500) {
@@ -156,6 +151,9 @@ fn style(ctx: &egui::Context) {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tray.update(self.shared.phase());
+        if let Some(wait) = self.hotkeys.retry(&self.draft) {
+            ctx.request_repaint_after(wait);
+        }
         if std::mem::take(&mut self.hide_on_start) {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         }
@@ -271,6 +269,9 @@ impl App {
                 provider_combo(ui, &mut self.draft.provider);
                 model_combo(ui, &self.shared, &mut self.draft, &self.installed);
             });
+            for e in &self.hotkeys.errors {
+                ui.label(RichText::new(e).color(RED));
+            }
             notice(ui, &self.shared);
         });
         ui.add_space(12.0);
@@ -467,7 +468,7 @@ impl App {
                 ui.end_row();
             }
         });
-        for e in &self.hotkey_errors {
+        for e in &self.hotkeys.errors {
             ui.label(RichText::new(e).color(RED));
         }
         ui.label(RichText::new("Global shortcuts work on X11 and Windows. Wayland sessions do not allow apps to grab global keys.").color(MUTED).small());

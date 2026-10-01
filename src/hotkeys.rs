@@ -4,6 +4,7 @@ use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -20,10 +21,14 @@ const ACTIONS: [(Action, Getter); 3] = [
     (Action::Cancel, |s| &s.cancel_shortcut),
 ];
 
+const RETRY: Duration = Duration::from_secs(2);
+
 pub struct Hotkeys {
     manager: Option<GlobalHotKeyManager>,
     active: Arc<Mutex<HashMap<u32, (Action, HotKey)>>>,
     current: Vec<String>,
+    retry_at: Option<Instant>,
+    pub errors: Vec<String>,
 }
 
 pub fn parse(text: &str) -> Result<Option<HotKey>, String> {
@@ -50,33 +55,55 @@ impl Hotkeys {
             shared.send(cmd);
         }));
         let manager = GlobalHotKeyManager::new().map_err(|e| eprintln!("global hotkeys unavailable: {e}")).ok();
-        Self { manager, active, current: Vec::new() }
+        Self { manager, active, current: Vec::new(), retry_at: None, errors: Vec::new() }
     }
 
-    pub fn sync(&mut self, settings: &Settings) -> Vec<String> {
+    pub fn sync(&mut self, settings: &Settings) {
         let wanted: Vec<String> = ACTIONS.iter().map(|(_, get)| get(settings).trim().to_string()).collect();
         if wanted == self.current {
-            return Vec::new();
+            return;
         }
         self.current = wanted;
-        let Some(manager) = &self.manager else { return vec!["Global hotkeys are unavailable on this system".into()] };
-        let mut active = self.active.lock().unwrap();
-        for (_, (_, hk)) in active.drain() {
+        self.retry_at = None;
+        let Some(manager) = &self.manager else {
+            self.errors = vec!["Global hotkeys are unavailable on this system".into()];
+            return;
+        };
+        let old: Vec<HotKey> = self.active.lock().unwrap().drain().map(|(_, (_, hk))| hk).collect();
+        for hk in old {
             let _ = manager.unregister(hk);
         }
-        let mut errors = Vec::new();
+        let mut fresh = HashMap::new();
+        self.errors.clear();
         for (action, get) in ACTIONS {
-            match parse(get(settings)) {
+            let text = get(settings);
+            match parse(text) {
                 Ok(Some(hk)) => match manager.register(hk) {
                     Ok(()) => {
-                        active.insert(hk.id(), (action, hk));
+                        fresh.insert(hk.id(), (action, hk));
                     }
-                    Err(e) => errors.push(format!("Couldn't register {}: {e}", get(settings))),
+                    Err(e) => {
+                        let reason = match e {
+                            global_hotkey::Error::AlreadyRegistered(_) => "another program (or another copy of whisper-hook) is using it".to_string(),
+                            other => other.to_string(),
+                        };
+                        self.errors.push(format!("Couldn't register {text}: {reason}. Retrying…"));
+                        self.retry_at = Some(Instant::now() + RETRY);
+                    }
                 },
                 Ok(None) => {}
-                Err(e) => errors.push(format!("Invalid shortcut '{}': {e}", get(settings))),
+                Err(e) => self.errors.push(format!("Invalid shortcut '{text}': {e}")),
             }
         }
-        errors
+        *self.active.lock().unwrap() = fresh;
+    }
+
+    pub fn retry(&mut self, settings: &Settings) -> Option<Duration> {
+        let at = self.retry_at?;
+        if Instant::now() >= at {
+            self.current.clear();
+            self.sync(settings);
+        }
+        self.retry_at.map(|t| t.saturating_duration_since(Instant::now()))
     }
 }
