@@ -15,9 +15,9 @@ fn color(phase: Phase) -> [u8; 3] {
 
 fn tooltip(phase: Phase) -> &'static str {
     match phase {
-        Phase::Idle => "whisper-hook: idle",
-        Phase::Recording => "whisper-hook: recording",
-        Phase::Transcribing => "whisper-hook: transcribing",
+        Phase::Idle => "steezen-stt: idle",
+        Phase::Recording => "steezen-stt: recording",
+        Phase::Transcribing => "steezen-stt: transcribing",
     }
 }
 

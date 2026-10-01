@@ -1,4 +1,4 @@
-# whisper-hook
+# steezen-stt
 
 Push-to-talk dictation for Linux (X11) and Windows, modelled on [Whispering](https://github.com/EpicenterHQ/epicenter/tree/main/apps/whispering), with a post-transcription pipeline:
 
@@ -32,23 +32,23 @@ Linux build deps (Debian/Ubuntu): `cmake libclang-dev libasound2-dev libxdo-dev 
    Open a new terminal afterwards so the PATH changes apply.
 3. Clone and build:
    ```powershell
-   git clone <repo-url> whisper-hook
-   cd whisper-hook
+   git clone git@github.com:slgotting/steezen-stt.git
+   cd steezen-stt
    cargo build --release
    ```
-   The app is `target\release\whisper-hook.exe`, a single file.
+   The app is `target\release\steezen-stt.exe`, a single file.
 4. Make a Start menu shortcut to it. To start at login, put a shortcut in `shell:startup` and enable *Settings → General → Start hidden in the tray*.
 
-On Windows, settings live in `%APPDATA%\whisper-hook` and scripts run through `cmd /C`, e.g. `python C:\tools\fix.py`.
+On Windows, settings live in `%APPDATA%\steezen-stt` and scripts run through `cmd /C`, e.g. `python C:\tools\fix.py`.
 
 The toolchain is pinned in `rust-toolchain.toml`. Dependency versions are pinned to releases at least 30 days old; check with `cargo audit`.
 
 ## Use
 
-Run `whisper-hook` (symlinked from `~/bin` to `target/release/whisper-hook`, so rebuilds take effect immediately). Running it again while it is open, even when hidden in the tray, brings the existing window to the front instead of starting a second copy.
+Run `steezen-stt` (symlinked from `~/bin` to `target/release/steezen-stt`, so rebuilds take effect immediately). Running it again while it is open, even when hidden in the tray, brings the existing window to the front instead of starting a second copy.
 
 Hold **Alt+Shift+D**, speak, release. The text is pasted into the focused window.
-Everything is configured in **Settings**; changes save automatically to `~/.config/whisper-hook/settings.json` (mode 600).
+Everything is configured in **Settings**; changes save automatically to `~/.config/steezen-stt/settings.json` (mode 600).
 
 | Section | What it does |
 |---|---|
@@ -75,9 +75,9 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 
 ## Data
 
-- Settings: `~/.config/whisper-hook/settings.json`
-- History and models: `~/.local/share/whisper-hook/`
-- Jev classification cache: `~/.cache/whisper-hook/corrector-cache.json`
+- Settings: `~/.config/steezen-stt/settings.json`
+- History and models: `~/.local/share/steezen-stt/`
+- Jev classification cache: `~/.cache/steezen-stt/corrector-cache.json`
 
 (`%APPDATA%` / `%LOCALAPPDATA%` on Windows.)
 

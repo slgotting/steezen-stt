@@ -3808,6 +3808,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "steezen-stt"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "cpal",
+ "dirs",
+ "eframe",
+ "enigo",
+ "global-hotkey",
+ "gtk",
+ "notify-rust",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tray-icon",
+ "whisper-rs",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4680,27 +4701,6 @@ dependencies = [
  "raw-window-handle",
  "static_assertions",
  "web-sys",
-]
-
-[[package]]
-name = "whisper-hook"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "chrono",
- "cpal",
- "dirs",
- "eframe",
- "enigo",
- "global-hotkey",
- "gtk",
- "notify-rust",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tray-icon",
- "whisper-rs",
 ]
 
 [[package]]

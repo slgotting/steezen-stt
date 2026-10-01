@@ -236,7 +236,7 @@ impl eframe::App for App {
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 10.0, ACCENT);
                 ui.painter().circle_filled(r.center(), 4.0, Color32::WHITE);
-                ui.label(bold("whisper-hook", 16.0).color(TEXT));
+                ui.label(bold("steezen-stt", 16.0).color(TEXT));
                 ui.add_space(14.0);
                 for (page, label) in PAGES {
                     if pill(ui, self.page == page, label).clicked() {
@@ -662,7 +662,7 @@ impl App {
         for (label, path) in [("Settings", config_dir()), ("Data (history, models)", data_dir())] {
             ui.label(RichText::new(format!("{label}: {}", path.display())).color(MUTED).small());
         }
-        if ui.button("Quit whisper-hook").clicked() {
+        if ui.button("Quit steezen-stt").clicked() {
             tray::quit(&self.shared);
         }
     }

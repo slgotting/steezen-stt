@@ -84,7 +84,7 @@ impl Hotkeys {
                     }
                     Err(e) => {
                         let reason = match e {
-                            global_hotkey::Error::AlreadyRegistered(_) => "another program (or another copy of whisper-hook) is using it".to_string(),
+                            global_hotkey::Error::AlreadyRegistered(_) => "another program (or another copy of steezen-stt) is using it".to_string(),
                             other => other.to_string(),
                         };
                         self.errors.push(format!("Couldn't register {text}: {reason}. Retrying…"));
