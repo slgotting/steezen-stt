@@ -19,7 +19,27 @@ cargo build --release --no-default-features  # cloud providers only, no C++ buil
 ```
 
 Linux build deps (Debian/Ubuntu): `cmake libclang-dev libasound2-dev libxdo-dev libgtk-3-dev libayatana-appindicator3-dev libssl-dev`.
-Windows: MSVC toolchain, CMake and LLVM (for libclang).
+
+### Windows
+
+1. Install Rust from https://rustup.rs (accept the MSVC default).
+2. Install the build tools:
+   ```powershell
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   winget install Kitware.CMake
+   winget install LLVM.LLVM
+   ```
+   Open a new terminal afterwards so the PATH changes apply.
+3. Clone and build:
+   ```powershell
+   git clone <repo-url> whisper-hook
+   cd whisper-hook
+   cargo build --release
+   ```
+   The app is `target\release\whisper-hook.exe`, a single file.
+4. Make a Start menu shortcut to it. To start at login, put a shortcut in `shell:startup` and enable *Settings → General → Start hidden in the tray*.
+
+On Windows, settings live in `%APPDATA%\whisper-hook` and scripts run through `cmd /C`, e.g. `python C:\tools\fix.py`.
 
 The toolchain is pinned in `rust-toolchain.toml`. Dependency versions are pinned to releases at least 30 days old; check with `cargo audit`.
 
