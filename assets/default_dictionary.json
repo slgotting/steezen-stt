@@ -1,0 +1,173 @@
+[
+  {
+    "enabled": true,
+    "word": "Claude",
+    "triggers": "cloud, clawed, clod",
+    "meaning": "Anthropic's AI assistant, which the speaker asks, tells or uses to write, fix or analyze things",
+    "alternatives": [
+      {
+        "word": "cloud",
+        "meaning": "cloud computing or storage (upload to the cloud, deploy to the cloud), or a cloud in the sky"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "Claude refers to Anthropic's AI assistant. Cloud refers to cloud computing, weather, storage, infrastructure, etc."
+  },
+  {
+    "enabled": true,
+    "word": "modal",
+    "triggers": "model, modell",
+    "meaning": "a UI dialog or popup window that opens and closes",
+    "alternatives": [
+      {
+        "word": "model",
+        "meaning": "a data model, machine learning model, 3D model, or product model"
+      }
+    ],
+    "threshold": 0.7,
+    "context": "Modal refers to a software/UI dialog. Model refers to a data model, AI model, object model, etc."
+  },
+  {
+    "enabled": true,
+    "word": "Jev",
+    "triggers": "jeff, chev, jav",
+    "meaning": "TypeSafe's Jev classification model",
+    "alternatives": [],
+    "threshold": 0.6,
+    "context": "Jev is TypeSafe's classification model, called through an API. Jeff is a person's name; chev is short for Chevrolet."
+  },
+  {
+    "enabled": true,
+    "word": "JSON",
+    "triggers": "jason",
+    "meaning": "the JSON data format",
+    "alternatives": [
+      {
+        "word": "Jason",
+        "meaning": "a person named Jason"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "JSON is a data format (files, payloads, parsing, serialization). Jason is a person's name."
+  },
+  {
+    "enabled": true,
+    "word": "SQL",
+    "triggers": "sequel",
+    "meaning": "the SQL database query language",
+    "alternatives": [
+      {
+        "word": "sequel",
+        "meaning": "a follow-up movie, book or game"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "SQL is a database query language (queries, tables, Postgres, MySQL). A sequel is a follow-up movie, book or game."
+  },
+  {
+    "enabled": true,
+    "word": "cache",
+    "triggers": "cash",
+    "meaning": "stored data kept for reuse by software",
+    "alternatives": [
+      {
+        "word": "cash",
+        "meaning": "money"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "A cache stores computed or fetched data for reuse (browser cache, Redis, invalidation). Cash is money."
+  },
+  {
+    "enabled": true,
+    "word": "Rust",
+    "triggers": "rust",
+    "meaning": "the Rust programming language",
+    "alternatives": [
+      {
+        "word": "rust",
+        "meaning": "corrosion on iron or steel"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "Rust is a programming language (cargo, crates, borrow checker). rust is corrosion on metal."
+  },
+  {
+    "enabled": true,
+    "word": "PyTorch",
+    "triggers": "pie torch, pi torch, pytorch",
+    "meaning": "",
+    "alternatives": [],
+    "threshold": 0.6,
+    "context": "PyTorch is a Python machine learning library."
+  },
+  {
+    "enabled": true,
+    "word": "kubectl",
+    "triggers": "cube control, cube cuddle, cube CTL",
+    "meaning": "",
+    "alternatives": [],
+    "threshold": 0.6,
+    "context": "kubectl is the Kubernetes command-line tool."
+  },
+  {
+    "enabled": true,
+    "word": "nginx",
+    "triggers": "engine x, engine ex",
+    "meaning": "",
+    "alternatives": [],
+    "threshold": 0.6,
+    "context": "nginx is a web server and reverse proxy."
+  },
+  {
+    "enabled": true,
+    "word": "GitHub",
+    "triggers": "get hub, git hub",
+    "meaning": "",
+    "alternatives": [],
+    "threshold": 0.6,
+    "context": "GitHub is a code hosting site (repos, pull requests, issues, actions)."
+  },
+  {
+    "enabled": true,
+    "word": "Vue",
+    "triggers": "view",
+    "meaning": "the Vue.js JavaScript front-end framework",
+    "alternatives": [
+      {
+        "word": "view",
+        "meaning": "the ordinary word view (a view, to view, a database view)"
+      }
+    ],
+    "threshold": 0.75,
+    "context": "Vue is a JavaScript front-end framework (components, Vue router, Nuxt). view is the ordinary word (a view, to view, database view, view model)."
+  },
+  {
+    "enabled": true,
+    "word": "git",
+    "triggers": "get",
+    "meaning": "the git version control command",
+    "alternatives": [
+      {
+        "word": "get",
+        "meaning": "the ordinary verb get"
+      }
+    ],
+    "threshold": 0.8,
+    "context": "git is the version control command (git pull, git push, git commit, git stash). get is the ordinary verb (get it, get the file, get started)."
+  },
+  {
+    "enabled": true,
+    "word": "sudo",
+    "triggers": "pseudo",
+    "meaning": "the Unix sudo command for running as root",
+    "alternatives": [
+      {
+        "word": "pseudo",
+        "meaning": "fake or approximate, as in pseudo code"
+      }
+    ],
+    "threshold": 0.6,
+    "context": "sudo is the Unix command to run as root (sudo apt install, needs sudo). pseudo means fake or approximate (pseudocode, pseudo-random)."
+  }
+]

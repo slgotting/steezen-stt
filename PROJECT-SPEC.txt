@@ -1,0 +1,10 @@
+Whispering example repo: https://github.com/EpicenterHQ/epicenter/tree/main/apps/whispering
+
+ - Trigger: Global hotkey (push to talk ; Alt Shift D ; but modifiable)
+ - Providers: OpenAI / Groq / Local (models should be any available model offered for this purpose from the provider)
+ - Local transcription is CPU only but should support GPU for other devices
+ - Delivery: Let's use the exact same method that the Whispering app does, which is, it does, it offers an option to paste in the focus window, it offers copy to the clipboard. Those are all toggleable options in the options panel, in the settings panel. try to be as true to the Whispering app and the settings they offer as possible, because, you know, a lot of these settings I like in terms of what happens when the transcription returns, right? So there's got to be that post hook that calls a post transcription script, and then, you know, that would happen before it copies to the clipboard, right? And then it can copy to the clipboard, it could be said to do any number of things afterwards, but I think the main thing is it should press enter or something, it should send an enter key too. It should copy to the clipboard, send the text, and press enter. That should be a setting that is toggleable.
+ - Should look something like whispering, with a full window, maybe a tray icon status indicator would be nice (and an upgrade over whispering). Sounds or notifications should be turned off by default but maybe provide the option in the settings
+ - Settings screen would be nice
+ - Additional is I think it should allow for custom scripts to be pointed to to run before or after the transcription begins. The actual copied output should apply after all custom scripts have been applied.
+ - I think maybe a better feature is to embed the script found here /home/steven/projects/speech/transcript-corrector that calls jev to classify a dictionary of words and determine if they need to be replaced. So the user would, in the settings, be able to create a dictionary of commonly misinterpreted words and the desired output word.
