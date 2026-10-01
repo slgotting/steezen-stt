@@ -26,6 +26,20 @@ pub enum Phase {
     Transcribing,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyCheck {
+    Unchecked,
+    Checking,
+    Valid,
+    Invalid(String),
+}
+
+#[derive(Default)]
+pub struct Missed {
+    pub transcripts: usize,
+    pub words: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub time: chrono::DateTime<chrono::Local>,
@@ -52,6 +66,8 @@ pub struct Shared {
     pub output: Output,
     pub cache: corrector::Cache,
     pub cmd: Mutex<Option<Sender<Cmd>>>,
+    pub key_check: Mutex<KeyCheck>,
+    pub missed: Mutex<Missed>,
 }
 
 fn history_path() -> std::path::PathBuf {
@@ -75,6 +91,8 @@ impl Shared {
             output: Output::new(),
             cache: corrector::Cache::load(cache_dir().join("corrector-cache.json")),
             cmd: Mutex::new(None),
+            key_check: Mutex::new(KeyCheck::Unchecked),
+            missed: Mutex::new(Missed::default()),
         })
     }
 
@@ -128,6 +146,22 @@ impl Shared {
         std::thread::spawn(move || {
             let result = transcribe::list_models(provider, &shared.settings(), &shared.http);
             shared.models.lock().unwrap().insert(provider, result);
+            shared.repaint();
+        });
+    }
+
+    pub fn check_key(self: &Arc<Self>, key: String, model: String, announce: bool) {
+        *self.key_check.lock().unwrap() = KeyCheck::Checking;
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let result = corrector::validate_key(&key, &model, &shared.http);
+            if announce && result.is_ok() {
+                shared.set_notice("Jev key works. Smart corrections are on.", false);
+            }
+            *shared.key_check.lock().unwrap() = match result {
+                Ok(()) => KeyCheck::Valid,
+                Err(e) => KeyCheck::Invalid(e),
+            };
             shared.repaint();
         });
     }
@@ -281,8 +315,20 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
     }
 
     let mut text = entry.raw.clone();
-    if s.corrector_enabled {
-        match corrector::correct(&text, &s.dictionary, &s.typesafe_key(), &s.corrector_model, &shared.cache, &shared.http) {
+    let key = s.typesafe_key();
+    if s.corrector_enabled && key.is_empty() {
+        let words = corrector::trigger_words(&text, &s.dictionary);
+        if !words.is_empty() {
+            let mut missed = shared.missed.lock().unwrap();
+            missed.transcripts += 1;
+            for w in words {
+                if missed.words.len() < 3 && !missed.words.iter().any(|m| m.eq_ignore_ascii_case(&w)) {
+                    missed.words.push(w);
+                }
+            }
+        }
+    } else if s.corrector_enabled {
+        match corrector::correct(&text, &s.dictionary, &key, &s.corrector_model, &shared.cache, &shared.http) {
             Ok((corrected, corrections)) => {
                 text = corrected;
                 entry.corrections = corrections;

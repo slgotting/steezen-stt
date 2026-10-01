@@ -56,12 +56,12 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 | Recording | Microphone, minimum recording length. |
 | Shortcuts | Push-to-talk, toggle, cancel. Click **Record** and press the combination. |
 | Output | Copy to clipboard, paste at cursor, press Enter after pasting, paste keystroke (Ctrl+V, Ctrl+Shift+V for terminals, Shift+Insert, or typing). |
-| Dictionary | Misheard words, their correct form, and alternative meanings. Jev classifies each occurrence in context; the app replaces it only above the threshold. Needs a TypeSafe key (or `$TYPESAFE_API_KEY`). Includes a test box. |
-| Scripts | Shell commands per stage, run in order. |
+| Dictionary | Built-in corrector (the Rust port of `transcript-corrector`), on by default. Misheard words, their correct form, and alternative meanings. Jev classifies each occurrence in context; the app replaces it only above the threshold. Needs a Jev (TypeSafe) API key from https://console.typesafe.ai/keys (or `$TYPESAFE_API_KEY`), with a Test key button and a sentence test box. Without a key, Home shows a reminder you can paste the key into, snooze (1 day, doubling up to 30 days) or dismiss for good. |
+| Post-processing | Any number of your own scripts per stage, run in order, each with a Test button for text filters. |
 | Sounds & notifications | All off by default. |
 | General | Close to tray, start hidden, history size. |
 
-### Scripts
+### Post-processing scripts
 
 | Stage | Input | Output |
 |---|---|---|

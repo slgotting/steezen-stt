@@ -145,6 +145,31 @@ impl DictRule {
     }
 }
 
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JevReminder {
+    pub never: bool,
+    pub snoozes: u32,
+    pub until: Option<chrono::DateTime<chrono::Local>>,
+}
+
+impl JevReminder {
+    const BASE_HOURS: i64 = 24;
+    const MAX_HOURS: i64 = 24 * 30;
+
+    pub fn due(&self) -> bool {
+        !self.never && self.until.is_none_or(|t| chrono::Local::now() >= t)
+    }
+
+    pub fn snooze(&mut self) -> chrono::Duration {
+        let hours = (Self::BASE_HOURS << self.snoozes.min(10)).min(Self::MAX_HOURS);
+        self.snoozes += 1;
+        let wait = chrono::Duration::hours(hours);
+        self.until = Some(chrono::Local::now() + wait);
+        wait
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -184,6 +209,7 @@ pub struct Settings {
     pub corrector_enabled: bool,
     pub corrector_model: String,
     pub dictionary: Vec<DictRule>,
+    pub jev_reminder: JevReminder,
 
     pub scripts: Vec<Script>,
     pub script_timeout_secs: u32,
@@ -226,6 +252,7 @@ impl Default for Settings {
             notify_error: false,
             corrector_enabled: true,
             corrector_model: "jev-latest".into(),
+            jev_reminder: JevReminder::default(),
             dictionary: serde_json::from_str(include_str!("../assets/default_dictionary.json")).unwrap_or_default(),
             scripts: Vec::new(),
             script_timeout_secs: 10,
@@ -321,4 +348,21 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
     }
     std::io::Write::write_all(&mut opts.open(&tmp)?, bytes)?;
     std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JevReminder;
+
+    #[test]
+    fn reminder_backs_off_exponentially_and_caps() {
+        let mut r = JevReminder::default();
+        assert!(r.due());
+        let waits: Vec<i64> = (0..7).map(|_| r.snooze().num_hours()).collect();
+        assert_eq!(waits, [24, 48, 96, 192, 384, 720, 720]);
+        assert!(!r.due());
+        r.until = None;
+        r.never = true;
+        assert!(!r.due());
+    }
 }

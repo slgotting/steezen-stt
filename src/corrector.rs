@@ -169,9 +169,45 @@ impl Cache {
     }
 }
 
+pub const KEY_URL: &str = "https://console.typesafe.ai/keys";
+
+fn post(http: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<Value, String> {
+    let mut delay = std::time::Duration::from_millis(250);
+    for attempt in 0..3 {
+        let resp = http
+            .post(JEV_URL)
+            .bearer_auth(key)
+            .json(body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .map_err(|e| format!("Jev request failed: {e}"))?;
+        match resp.status().as_u16() {
+            200..=299 => return resp.json().map_err(|e| format!("Jev returned an unreadable response: {e}")),
+            401 => return Err("Jev rejected the API key (401). Check the key in Settings → Dictionary.".into()),
+            429 | 529 if attempt < 2 => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            code => return Err(format!("Jev error {code}: {}", resp.text().unwrap_or_default().chars().take(200).collect::<String>())),
+        }
+    }
+    Err("Jev is busy; try again shortly".into())
+}
+
+pub fn validate_key(key: &str, model: &str, http: &reqwest::blocking::Client) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return Err("Enter a key first".into());
+    }
+    post(http, key.trim(), &json!({"model": model, "state": "test", "questions": {"q": {"type": "noul", "instructions": "Is this a test?"}}})).map(|_| ())
+}
+
+pub fn trigger_words(text: &str, rules: &[DictRule]) -> Vec<String> {
+    find_candidates(text, rules).into_iter().map(|c| c.word).collect()
+}
+
 fn classify(candidates: &[&mut Candidate], key: &str, model: &str, http: &reqwest::blocking::Client) -> Result<Vec<(String, f64)>, String> {
     if key.is_empty() {
-        return Err("TypeSafe API key is not set (Settings → Dictionary)".into());
+        return Err(format!("no Jev API key set; get one at {KEY_URL}"));
     }
     let state: Map<String, Value> = candidates
         .iter()
@@ -192,15 +228,7 @@ fn classify(candidates: &[&mut Candidate], key: &str, model: &str, http: &reqwes
             }))
         })
         .collect();
-    let resp: Value = http
-        .post(JEV_URL)
-        .bearer_auth(key)
-        .json(&json!({"model": model, "state": state, "questions": questions}))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .map_err(|e| format!("JEV request failed: {e}"))?;
+    let resp = post(http, key, &json!({"model": model, "state": state, "questions": questions}))?;
     (0..candidates.len())
         .map(|i| {
             let a = &resp["answers"][format!("c{i}")];

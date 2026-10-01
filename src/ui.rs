@@ -1,5 +1,5 @@
 use crate::corrector;
-use crate::engine::{Cmd, Entry, Phase, Shared};
+use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
 use crate::transcribe;
@@ -37,8 +37,8 @@ const SECTIONS: [(Section, &str, &str); 8] = [
     (Section::Recording, "Recording", "Microphone and recording behaviour."),
     (Section::Shortcuts, "Shortcuts", "Global keys, e.g. Alt+Shift+D, Ctrl+Space or F9. Click Record and press the combination."),
     (Section::Output, "Output", "What happens to the final text, after the dictionary and every text-filter script have run."),
-    (Section::Dictionary, "Dictionary", "Words speech-to-text often gets wrong. Jev classifies each occurrence in context; the app replaces it only above the threshold. No LLM rewrites your text."),
-    (Section::Scripts, "Scripts", "Shell commands that run at each stage of the pipeline, in order."),
+    (Section::Dictionary, "Dictionary", "Built-in corrector for words speech-to-text often gets wrong. Jev classifies each occurrence in context and the app replaces it only above the threshold. It runs on every transcript, before your scripts. No LLM rewrites your text."),
+    (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → your text filters, top to bottom → output → after-delivery scripts."),
     (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything is off by default."),
     (Section::General, "General", "Window, tray and history."),
 ];
@@ -83,6 +83,8 @@ pub struct App {
     test_input: String,
     test_output: Arc<Mutex<Option<String>>>,
     installed: Vec<String>,
+    key_input: String,
+    script_tests: Arc<Mutex<std::collections::HashMap<usize, String>>>,
 }
 
 impl App {
@@ -95,6 +97,9 @@ impl App {
         let tray = Tray::new(shared.clone());
         for p in Provider::ALL {
             shared.refresh_models(p);
+        }
+        if draft.corrector_enabled && !draft.typesafe_key().is_empty() {
+            shared.check_key(draft.typesafe_key(), draft.corrector_model.clone(), false);
         }
         Self {
             hide_on_start: draft.start_hidden,
@@ -110,6 +115,8 @@ impl App {
             test_input: "I asked cloud to fix the sequel query.".into(),
             test_output: Arc::default(),
             installed: transcribe::installed_local_models(),
+            key_input: String::new(),
+            script_tests: Arc::default(),
             shared,
         }
     }
@@ -304,6 +311,10 @@ fn entry_body(ui: &mut Ui, shared: &Shared, e: &Entry) {
 impl App {
     fn home(&mut self, ui: &mut Ui) {
         let phase = self.shared.phase();
+        let key_failed = matches!(*self.shared.key_check.lock().unwrap(), KeyCheck::Invalid(_));
+        if self.draft.corrector_enabled && (self.draft.typesafe_key().is_empty() || key_failed) && self.draft.jev_reminder.due() {
+            self.jev_banner(ui);
+        }
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
             if record_button(ui, phase).on_hover_text("Click to start or stop recording").clicked() {
@@ -338,6 +349,47 @@ impl App {
             ui.label(bold("Latest transcript", 15.0).color(MUTED));
             card(ui, |ui| entry_body(ui, &self.shared, &e));
         }
+    }
+
+    fn jev_banner(&mut self, ui: &mut Ui) {
+        let missed = {
+            let m = self.shared.missed.lock().unwrap();
+            (m.transcripts, m.words.join("\", \""))
+        };
+        egui::Frame::new()
+            .fill(ACCENT.gamma_multiply(0.12))
+            .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6)))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(bold("Turn on smart corrections with Jev", 16.0).color(TEXT));
+                ui.label("Speech-to-text often mishears names and jargon: \"Claude\" comes back as \"cloud\", \"SQL\" as \"sequel\". The built-in dictionary uses Jev, TypeSafe's classification model, to read the surrounding sentence and fix only the words that are actually wrong, in a fraction of a second. It never rewrites the rest of your text, and nothing is sent to Jev unless a dictionary word appears.");
+                if missed.0 > 0 {
+                    ui.label(RichText::new(format!("{} recent transcript{} had words it could have checked (\"{}\").", missed.0, if missed.0 == 1 { "" } else { "s" }, missed.1)).color(ACCENT_HI));
+                }
+                key_status(ui, &self.shared);
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.key_input).password(true).desired_width(280.0).hint_text("Paste your Jev (TypeSafe) API key"));
+                    if ui.add_enabled(!self.key_input.trim().is_empty(), egui::Button::new("Save & turn on")).clicked() {
+                        self.draft.typesafe_api_key = self.key_input.trim().to_string();
+                        self.key_input.clear();
+                        self.shared.check_key(self.draft.typesafe_api_key.clone(), self.draft.corrector_model.clone(), true);
+                    }
+                    ui.hyperlink_to("Get a key", corrector::KEY_URL);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Don't show again").on_hover_text("You can still add a key in Settings → Dictionary").clicked() {
+                            self.draft.jev_reminder.never = true;
+                        }
+                        let next = 24i64 << self.draft.jev_reminder.snoozes.min(10);
+                        if ui.button("Later").on_hover_text(format!("Remind me in {}", describe_hours(next.min(24 * 30)))).clicked() {
+                            let wait = self.draft.jev_reminder.snooze();
+                            self.shared.set_notice(format!("OK, we'll remind you in {}", describe_hours(wait.num_hours())), false);
+                        }
+                    });
+                });
+            });
+        ui.add_space(4.0);
     }
 
     fn history(&mut self, ui: &mut Ui) {
@@ -543,10 +595,18 @@ impl App {
     fn dictionary_settings(&mut self, ui: &mut Ui) {
         ui.checkbox(&mut self.draft.corrector_enabled, "Enable dictionary corrections");
         ui.horizontal(|ui| {
-            ui.label("TypeSafe API key");
-            ui.add(egui::TextEdit::singleline(&mut self.draft.typesafe_api_key).password(!self.show_keys).desired_width(320.0).hint_text("or set $TYPESAFE_API_KEY"));
+            ui.label("Jev API key");
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.draft.typesafe_api_key).password(!self.show_keys).desired_width(300.0).hint_text("or set $TYPESAFE_API_KEY"));
+            if edit.changed() {
+                *self.shared.key_check.lock().unwrap() = KeyCheck::Unchecked;
+            }
             ui.checkbox(&mut self.show_keys, "Show");
+            if ui.button("Test key").clicked() {
+                self.shared.check_key(self.draft.typesafe_key(), self.draft.corrector_model.clone(), true);
+            }
+            ui.hyperlink_to("Get a key", corrector::KEY_URL);
         });
+        key_status(ui, &self.shared);
         ui.horizontal(|ui| {
             ui.label("Jev model");
             ui.add(egui::TextEdit::singleline(&mut self.draft.corrector_model).desired_width(160.0));
@@ -612,6 +672,10 @@ impl App {
             ui.add(egui::DragValue::new(&mut self.draft.script_timeout_secs).range(1..=300).suffix(" s"));
             ui.label("Timeout per script");
         });
+        ui.horizontal(|ui| {
+            ui.label("Sample text for Test");
+            ui.add(egui::TextEdit::singleline(&mut self.test_input).desired_width(f32::INFINITY));
+        });
         ui.separator();
         let mut remove = None;
         let mut swap = None;
@@ -633,11 +697,24 @@ impl App {
                     if i + 1 < count && ui.small_button("▼").clicked() {
                         swap = Some((i, i + 1));
                     }
+                    if s.stage == Stage::AfterTranscription && ui.small_button("Test").on_hover_text("Run this script on the sample text").clicked() {
+                        let (script, input, timeout, out, shared) = (s.clone(), self.test_input.clone(), self.draft.script_timeout_secs.max(1), self.script_tests.clone(), self.shared.clone());
+                        out.lock().unwrap().insert(i, "Running…".into());
+                        std::thread::spawn(move || {
+                            let script = crate::settings::Script { enabled: true, ..script };
+                            let (text, errors) = crate::hooks::filter(&[script], input, Duration::from_secs(timeout as u64));
+                            out.lock().unwrap().insert(i, errors.first().cloned().unwrap_or(text));
+                            shared.repaint();
+                        });
+                    }
                     if ui.small_button("🗑").clicked() {
                         remove = Some(i);
                     }
                 });
                 ui.add(egui::TextEdit::singleline(&mut s.command).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace).hint_text("e.g. python3 ~/bin/fix.py"));
+                if let Some(result) = self.script_tests.lock().unwrap().get(&i) {
+                    ui.label(RichText::new(format!("→ {result}")).color(ACCENT_HI).small());
+                }
             });
         }
         if let Some((a, b)) = swap {
@@ -645,6 +722,9 @@ impl App {
         }
         if let Some(i) = remove {
             self.draft.scripts.remove(i);
+        }
+        if swap.is_some() || remove.is_some() {
+            self.script_tests.lock().unwrap().clear();
         }
         if ui.button("➕ Add script").clicked() {
             self.draft.scripts.push(Script { enabled: true, name: format!("Script {}", count + 1), command: String::new(), stage: Stage::AfterTranscription });
@@ -778,4 +858,21 @@ fn nav_item(ui: &mut Ui, selected: bool, text: &str) -> egui::Response {
     let color = if selected { Color32::WHITE } else if resp.hovered() { TEXT } else { MUTED };
     ui.painter().text(rect.left_center() + Vec2::new(12.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(14.0), color);
     resp
+}
+
+fn describe_hours(hours: i64) -> String {
+    match hours {
+        h if h < 48 => format!("{h} hours"),
+        h => format!("{} days", h / 24),
+    }
+}
+
+fn key_status(ui: &mut Ui, shared: &Shared) {
+    let (text, color) = match &*shared.key_check.lock().unwrap() {
+        KeyCheck::Unchecked => return,
+        KeyCheck::Checking => ("Checking key…".to_string(), MUTED),
+        KeyCheck::Valid => ("Key works. Smart corrections are on.".to_string(), GREEN),
+        KeyCheck::Invalid(e) => (e.clone(), RED),
+    };
+    ui.label(RichText::new(text).color(color).small());
 }
