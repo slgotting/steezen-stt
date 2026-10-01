@@ -85,20 +85,25 @@ pub fn notify(scripts: &[Script], stage: Stage, input: &str, env: &[(&str, &str)
     active(scripts, stage).filter_map(|s| run(s, input, env, timeout).err().map(|e| format!("Script '{}' {e}", s.name))).collect()
 }
 
-pub fn filter(scripts: &[Script], text: String, timeout: Duration) -> (String, Vec<String>) {
-    let mut errors = Vec::new();
-    let text = active(scripts, Stage::AfterTranscription).fold(text, |text, s| match run(s, &text, &[("WH_TEXT", &text)], timeout) {
-        Ok(out) if !out.trim().is_empty() => out.trim_end_matches(['\n', '\r']).to_string(),
-        Ok(_) => {
-            errors.push(format!("Script '{}' returned no text; kept previous text", s.name));
-            text
-        }
-        Err(e) => {
-            errors.push(format!("Script '{}' {e}; kept previous text", s.name));
-            text
-        }
+pub struct ScriptRun {
+    pub name: String,
+    pub ms: u64,
+    pub error: Option<String>,
+}
+
+pub fn filter(scripts: &[Script], text: String, timeout: Duration) -> (String, Vec<ScriptRun>) {
+    let mut runs = Vec::new();
+    let text = active(scripts, Stage::AfterTranscription).fold(text, |text, s| {
+        let started = Instant::now();
+        let (text, error) = match run(s, &text, &[("WH_TEXT", &text)], timeout) {
+            Ok(out) if !out.trim().is_empty() => (out.trim_end_matches(['\n', '\r']).to_string(), None),
+            Ok(_) => (text, Some(format!("Script '{}' returned no text; kept previous text", s.name))),
+            Err(e) => (text, Some(format!("Script '{}' {e}; kept previous text", s.name))),
+        };
+        runs.push(ScriptRun { name: s.name.clone(), ms: started.elapsed().as_millis() as u64, error });
+        text
     });
-    (text, errors)
+    (text, runs)
 }
 
 #[cfg(all(test, unix))]
@@ -112,15 +117,15 @@ mod tests {
     #[test]
     fn filters_chain_and_failures_pass_through() {
         let scripts = [script("tr a-z A-Z"), script("exit 3"), script("sed 's/HELLO/bye/'")];
-        let (out, errors) = filter(&scripts, "hello there".into(), Duration::from_secs(5));
+        let (out, runs) = filter(&scripts, "hello there".into(), Duration::from_secs(5));
         assert_eq!(out, "bye THERE");
-        assert_eq!(errors.len(), 1);
+        assert_eq!(runs.iter().filter(|r| r.error.is_some()).count(), 1);
     }
 
     #[test]
     fn timeout_kills() {
-        let (out, errors) = filter(&[script("sleep 5")], "x".into(), Duration::from_millis(200));
+        let (out, runs) = filter(&[script("sleep 5")], "x".into(), Duration::from_millis(200));
         assert_eq!(out, "x");
-        assert!(errors[0].contains("timed out"));
+        assert!(runs[0].error.as_ref().unwrap().contains("timed out"));
     }
 }

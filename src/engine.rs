@@ -40,6 +40,35 @@ pub struct Missed {
     pub words: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StepState {
+    Ok,
+    Skipped,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Step {
+    pub label: String,
+    pub detail: String,
+    pub state: StepState,
+}
+
+#[derive(Default)]
+pub struct JevStats {
+    pub requests: usize,
+    pub fixes: usize,
+    pub last: Option<Instant>,
+}
+
+pub fn fmt_ms(ms: u64) -> String {
+    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", ms as f64 / 1000.0) }
+}
+
+fn step(steps: &mut Vec<Step>, label: impl Into<String>, detail: impl Into<String>, state: StepState) {
+    steps.push(Step { label: label.into(), detail: detail.into(), state });
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub time: chrono::DateTime<chrono::Local>,
@@ -50,6 +79,10 @@ pub struct Entry {
     pub text: String,
     pub corrections: Vec<Correction>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    #[serde(default)]
+    pub dict_text: String,
 }
 
 pub struct Shared {
@@ -68,6 +101,7 @@ pub struct Shared {
     pub cmd: Mutex<Option<Sender<Cmd>>>,
     pub key_check: Mutex<KeyCheck>,
     pub missed: Mutex<Missed>,
+    pub jev: Mutex<JevStats>,
 }
 
 fn history_path() -> std::path::PathBuf {
@@ -93,6 +127,7 @@ impl Shared {
             cmd: Mutex::new(None),
             key_check: Mutex::new(KeyCheck::Unchecked),
             missed: Mutex::new(Missed::default()),
+            jev: Mutex::new(JevStats::default()),
         })
     }
 
@@ -290,7 +325,10 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
         text: String::new(),
         corrections: Vec::new(),
         error: None,
+        steps: Vec::new(),
+        dict_text: String::new(),
     };
+    let provider = s.provider.info().label;
 
     if hooks::has(&s.scripts, Stage::BeforeTranscription) {
         let path = std::env::temp_dir().join(format!("{}-{}.wav", crate::settings::APP_NAME, std::process::id()));
@@ -301,9 +339,15 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
         }
     }
 
+    let started = Instant::now();
     match transcribe::transcribe(samples, s, &shared.http, &shared.local) {
-        Ok(text) => entry.raw = text,
+        Ok(text) => {
+            entry.raw = text;
+            let ms = fmt_ms(started.elapsed().as_millis() as u64);
+            step(&mut entry.steps, format!("{provider} · {ms}"), format!("Transcribed by {provider} ({}) in {ms}", entry.model), StepState::Ok);
+        }
         Err(e) => {
+            step(&mut entry.steps, format!("{provider} · failed"), e.clone(), StepState::Failed);
             shared.set_notice(&e, true);
             entry.error = Some(e);
             return Some(entry);
@@ -316,8 +360,12 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
 
     let mut text = entry.raw.clone();
     let key = s.typesafe_key();
-    if s.corrector_enabled && key.is_empty() {
+    if !s.corrector_enabled {
+        step(&mut entry.steps, "Jev · off", "Dictionary corrections are turned off in Settings → Dictionary", StepState::Skipped);
+    } else if key.is_empty() {
         let words = corrector::trigger_words(&text, &s.dictionary);
+        let detail = if words.is_empty() { "No Jev API key. This transcript had no dictionary words anyway.".to_string() } else { format!("No Jev API key, so these were not checked: {}", words.join(", ")) };
+        step(&mut entry.steps, "Jev · no key", detail, StepState::Skipped);
         if !words.is_empty() {
             let mut missed = shared.missed.lock().unwrap();
             missed.transcripts += 1;
@@ -327,21 +375,67 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
                 }
             }
         }
-    } else if s.corrector_enabled {
+    } else {
+        let started = Instant::now();
         match corrector::correct(&text, &s.dictionary, &key, &s.corrector_model, &shared.cache, &shared.http) {
+            Ok((corrected, corrections)) if corrections.is_empty() => {
+                step(&mut entry.steps, "Jev · not needed", "Jev is ready, but no dictionary words appeared, so nothing was sent.", StepState::Skipped);
+                text = corrected;
+            }
             Ok((corrected, corrections)) => {
+                let ms = started.elapsed().as_millis() as u64;
+                let fixed = corrections.iter().filter(|c| c.to.is_some()).count();
+                let asked = corrections.iter().filter(|c| !c.cached).count();
+                let words: Vec<String> = corrections.iter().map(|c| match &c.to {
+                    Some(to) => format!("{} → {to} ({:.0}%)", c.from, c.probability * 100.0),
+                    None => format!("{} kept ({:.0}% {})", c.from, c.probability * 100.0, c.choice),
+                }).collect();
+                let source = match asked {
+                    0 => "all answers from the local cache".to_string(),
+                    n if n == corrections.len() => format!("asked Jev in {}", fmt_ms(ms)),
+                    n => format!("asked Jev about {n} in {}, rest from cache", fmt_ms(ms)),
+                };
+                step(&mut entry.steps, format!("Jev · fixed {fixed} of {}", corrections.len()), format!("{}; {source}", words.join(", ")), StepState::Ok);
+                let mut stats = shared.jev.lock().unwrap();
+                stats.requests += (asked > 0) as usize;
+                stats.fixes += fixed;
+                stats.last = Some(Instant::now());
+                drop(stats);
+                entry.dict_text = corrected.clone();
                 text = corrected;
                 entry.corrections = corrections;
             }
-            Err(e) => warnings.push(format!("Dictionary skipped: {e}")),
+            Err(e) => {
+                step(&mut entry.steps, "Jev · error", e.clone(), StepState::Failed);
+                warnings.push(format!("Dictionary skipped: {e}"));
+            }
         }
     }
-    let (text, script_errors) = hooks::filter(&s.scripts, text, timeout);
-    warnings.extend(script_errors);
+    let (text, runs) = hooks::filter(&s.scripts, text, timeout);
+    for run in runs {
+        let ms = fmt_ms(run.ms);
+        match run.error {
+            None => step(&mut entry.steps, format!("{} · {ms}", run.name), format!("Script '{}' ran in {ms}", run.name), StepState::Ok),
+            Some(e) => {
+                step(&mut entry.steps, format!("{} · failed", run.name), e.clone(), StepState::Failed);
+                warnings.push(e);
+            }
+        }
+    }
     entry.text = text;
 
-    if let Err(e) = shared.output.deliver(&entry.text, s) {
-        warnings.push(e);
+    let delivered = match (s.output_cursor, s.output_clipboard) {
+        (true, _) if s.output_enter => "Pasted + Enter",
+        (true, _) => "Pasted",
+        (false, true) => "Copied",
+        (false, false) => "Saved to history",
+    };
+    match shared.output.deliver(&entry.text, s) {
+        Ok(()) => step(&mut entry.steps, delivered, format!("{delivered}{}", if s.output_cursor && s.output_clipboard { ", and left on the clipboard" } else { "" }), StepState::Ok),
+        Err(e) => {
+            step(&mut entry.steps, format!("{delivered} · failed"), e.clone(), StepState::Failed);
+            warnings.push(e);
+        }
     }
     play_if(s.sound_complete, Sound::Complete);
     if s.notify_complete {

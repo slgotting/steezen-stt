@@ -23,6 +23,7 @@ pub struct Candidate<'a> {
     occurrence: String,
     choice: Option<String>,
     probability: f64,
+    cached: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -31,6 +32,10 @@ pub struct Correction {
     pub to: Option<String>,
     pub choice: String,
     pub probability: f64,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub at: Option<usize>,
 }
 
 fn is_word_char(c: char) -> bool {
@@ -69,6 +74,7 @@ fn find_candidates<'a>(text: &str, rules: &'a [DictRule]) -> Vec<Candidate<'a>> 
                 occurrence,
                 choice: None,
                 probability: 0.0,
+                cached: false,
             });
             pos = m.end();
         } else {
@@ -269,7 +275,7 @@ pub fn correct(text: &str, rules: &[DictRule], key: &str, model: &str, cache: &C
         let data = cache.data.lock().unwrap();
         for c in candidates.iter_mut() {
             match data.get(&cache_key(c)) {
-                Some((choice, p)) => (c.choice, c.probability) = (Some(choice.clone()), *p),
+                Some((choice, p)) => (c.choice, c.probability, c.cached) = (Some(choice.clone()), *p, true),
                 None => pending.push(c),
             }
         }
@@ -286,18 +292,19 @@ pub fn correct(text: &str, rules: &[DictRule], key: &str, model: &str, cache: &C
     }
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
+    let mut corrections = Vec::with_capacity(candidates.len());
     for c in &candidates {
-        if let Some(new) = replacement(c) {
+        let to = replacement(c);
+        let mut at = None;
+        if let Some(new) = &to {
             out.push_str(&text[pos..c.start]);
-            out.push_str(&new);
+            at = Some(out.len());
+            out.push_str(new);
             pos = c.end;
         }
+        corrections.push(Correction { from: c.word.clone(), to, choice: c.choice.clone().unwrap_or_default(), probability: c.probability, cached: c.cached, at });
     }
     out.push_str(&text[pos..]);
-    let corrections = candidates
-        .iter()
-        .map(|c| Correction { from: c.word.clone(), to: replacement(c), choice: c.choice.clone().unwrap_or_default(), probability: c.probability })
-        .collect();
     Ok((out, corrections))
 }
 

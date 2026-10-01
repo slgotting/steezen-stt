@@ -1,5 +1,5 @@
 use crate::corrector;
-use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared};
+use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
 use crate::transcribe;
@@ -250,7 +250,13 @@ impl eframe::App for App {
                         self.page = page;
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| status_chip(ui, phase));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    status_chip(ui, phase);
+                    if jev_chip(ui, &self.draft, &self.shared).clicked() {
+                        self.page = Page::Settings;
+                        self.section = Section::Dictionary;
+                    }
+                });
             });
         });
         egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(PADDING)).show(ui, |ui| match self.page {
@@ -288,10 +294,13 @@ fn entry_body(ui: &mut Ui, shared: &Shared, e: &Entry) {
         ui.label(muted(format!("{} · {} · {:.1}s", e.provider.info().label, e.model, e.duration_secs)).small());
     });
     if !e.text.is_empty() {
-        ui.add(egui::Label::new(RichText::new(&e.text).size(15.0)).selectable(true).wrap());
+        transcript_text(ui, e);
+    }
+    if !e.steps.is_empty() {
+        step_strip(ui, &e.steps);
     }
     let changed: Vec<String> = e.corrections.iter().filter_map(|c| c.to.as_ref().map(|to| format!("{} → {to} ({:.0}%)", c.from, c.probability * 100.0))).collect();
-    if !changed.is_empty() {
+    if !changed.is_empty() && e.steps.is_empty() {
         ui.label(RichText::new(format!("Dictionary: {}", changed.join(", "))).color(ACCENT_HI).small());
     }
     if let Some(err) = &e.error {
@@ -702,8 +711,8 @@ impl App {
                         out.lock().unwrap().insert(i, "Running…".into());
                         std::thread::spawn(move || {
                             let script = crate::settings::Script { enabled: true, ..script };
-                            let (text, errors) = crate::hooks::filter(&[script], input, Duration::from_secs(timeout as u64));
-                            out.lock().unwrap().insert(i, errors.first().cloned().unwrap_or(text));
+                            let (text, runs) = crate::hooks::filter(&[script], input, Duration::from_secs(timeout as u64));
+                            out.lock().unwrap().insert(i, runs.into_iter().find_map(|r| r.error).unwrap_or(text));
                             shared.repaint();
                         });
                     }
@@ -875,4 +884,84 @@ fn key_status(ui: &mut Ui, shared: &Shared) {
         KeyCheck::Invalid(e) => (e.clone(), RED),
     };
     ui.label(RichText::new(text).color(color).small());
+}
+
+fn transcript_text(ui: &mut Ui, e: &Entry) {
+    let font = egui::FontId::proportional(15.0);
+    let mut fixes: Vec<(usize, usize, &crate::corrector::Correction)> = e
+        .corrections
+        .iter()
+        .filter_map(|c| Some((c.at?, c.at? + c.to.as_ref()?.len(), c)))
+        .filter(|(_, end, _)| *end <= e.text.len())
+        .collect();
+    if e.dict_text.is_empty() || e.text != e.dict_text || fixes.is_empty() {
+        ui.add(egui::Label::new(RichText::new(&e.text).font(font)).selectable(true).wrap());
+        return;
+    }
+    fixes.sort_by_key(|f| f.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut pos = 0;
+        for (start, end, c) in fixes {
+            if start < pos || !e.text.is_char_boundary(start) || !e.text.is_char_boundary(end) {
+                continue;
+            }
+            ui.add(egui::Label::new(RichText::new(&e.text[pos..start]).font(font.clone())).selectable(true).wrap());
+            ui.add(egui::Label::new(RichText::new(&e.text[start..end]).font(font.clone()).color(ACCENT_HI).underline()).sense(Sense::hover()))
+                .on_hover_text(format!("Jev fixed \"{}\" → \"{}\" ({:.0}% sure{})", c.from, &e.text[start..end], c.probability * 100.0, if c.cached { ", cached answer" } else { "" }));
+            pos = end;
+        }
+        ui.add(egui::Label::new(RichText::new(&e.text[pos..]).font(font)).selectable(true).wrap());
+    });
+}
+
+fn step_strip(ui: &mut Ui, steps: &[Step]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+        for (i, st) in steps.iter().enumerate() {
+            if i > 0 {
+                ui.label(muted("→").small());
+            }
+            let color = match st.state {
+                StepState::Ok => GREEN,
+                StepState::Skipped => MUTED,
+                StepState::Failed => RED,
+            };
+            let jev = st.label.starts_with("Jev");
+            let fill = if jev && st.state == StepState::Ok { ACCENT.gamma_multiply(0.25) } else { color.gamma_multiply(0.10) };
+            egui::Frame::new().fill(fill).corner_radius(egui::CornerRadius::same(255)).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
+                let text = RichText::new(&st.label).small().color(if jev && st.state == StepState::Ok { ACCENT_HI } else { color });
+                ui.add(egui::Label::new(text).sense(Sense::hover()))
+            }).inner.on_hover_text(&st.detail);
+        }
+    });
+}
+
+fn jev_chip(ui: &mut Ui, s: &Settings, shared: &Shared) -> egui::Response {
+    let check = shared.key_check.lock().unwrap().clone();
+    let (label, color, tip) = match (s.corrector_enabled, s.typesafe_key().is_empty(), &check) {
+        (false, _, _) => ("Jev off", MUTED, "Dictionary corrections are turned off.".to_string()),
+        (true, true, _) => ("Jev off", MUTED, "No Jev API key, so misheard words are not corrected. Click to add one.".to_string()),
+        (true, false, KeyCheck::Invalid(e)) => ("Jev key rejected", RED, e.clone()),
+        (true, false, KeyCheck::Checking | KeyCheck::Unchecked) => ("Jev", MUTED, "Checking the Jev key…".to_string()),
+        (true, false, KeyCheck::Valid) => {
+            let stats = shared.jev.lock().unwrap();
+            let last = stats.last.map_or("not used yet this session".to_string(), |t| format!("last used {} ago", ago(t.elapsed())));
+            ("Jev on", ACCENT_HI, format!("Smart corrections are on. This session: {} Jev request{}, {} fix{}; {last}.", stats.requests, if stats.requests == 1 { "" } else { "s" }, stats.fixes, if stats.fixes == 1 { "" } else { "es" }))
+        }
+    };
+    let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), color);
+    let (rect, resp) = ui.allocate_exact_size(galley.size() + Vec2::new(24.0, 10.0), Sense::click());
+    let p = ui.painter();
+    p.rect(rect, egui::CornerRadius::same(255), color.gamma_multiply(if resp.hovered() { 0.22 } else { 0.12 }), Stroke::new(1.0, color.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    p.galley(rect.center() - galley.size() / 2.0, galley, color);
+    resp.on_hover_text(tip)
+}
+
+fn ago(d: Duration) -> String {
+    match d.as_secs() {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s => format!("{} h", s / 3600),
+    }
 }
