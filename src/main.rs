@@ -3,6 +3,7 @@
 mod audio;
 mod corrector;
 mod engine;
+mod formatter;
 mod hooks;
 mod hotkeys;
 mod instance;

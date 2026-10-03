@@ -1,5 +1,6 @@
 use crate::audio::{self, Sound, WHISPER_RATE};
 use crate::corrector::{self, Correction};
+use crate::formatter;
 use crate::hooks;
 use crate::output::Output;
 use crate::settings::{Provider, Settings, Stage, cache_dir, data_dir, write_private};
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
-    PttDown,
+    PttDown(bool),
     PttUp,
     Toggle,
     Cancel,
@@ -236,6 +237,7 @@ const AUTOREPEAT_GRACE: Duration = Duration::from_millis(60);
 fn run(shared: Arc<Shared>, rx: Receiver<Cmd>) {
     let mut recording: Option<audio::Recording> = None;
     let mut pending_stop: Option<Instant> = None;
+    let mut format = false;
     loop {
         let timeout = pending_stop.map_or(Duration::from_secs(5), |t| t.saturating_duration_since(Instant::now()));
         let cmd = match rx.recv_timeout(timeout) {
@@ -245,12 +247,18 @@ fn run(shared: Arc<Shared>, rx: Receiver<Cmd>) {
         };
         let settings = shared.settings();
         match cmd {
-            Some(Cmd::PttDown) if pending_stop.take().is_some() => {}
-            Some(Cmd::PttDown) if recording.is_none() => recording = start(&shared, &settings),
+            Some(Cmd::PttDown(_)) if pending_stop.take().is_some() => {}
+            Some(Cmd::PttDown(f)) if recording.is_none() => {
+                recording = start(&shared, &settings);
+                format = f;
+            }
             Some(Cmd::PttUp) if recording.is_some() => pending_stop = Some(Instant::now() + AUTOREPEAT_GRACE),
             Some(Cmd::Toggle) => match recording.take() {
-                Some(rec) => stop(&shared, &settings, rec),
-                None => recording = start(&shared, &settings),
+                Some(rec) => stop(&shared, &settings, rec, format),
+                None => {
+                    recording = start(&shared, &settings);
+                    format = false;
+                }
             },
             Some(Cmd::Cancel) => {
                 pending_stop = None;
@@ -264,7 +272,7 @@ fn run(shared: Arc<Shared>, rx: Receiver<Cmd>) {
             None => {
                 if pending_stop.take().is_some()
                     && let Some(rec) = recording.take() {
-                        stop(&shared, &settings, rec);
+                        stop(&shared, &settings, rec, format);
                     }
                 if settings.local_unload_minutes > 0 {
                     shared.local.unload_if_idle(Duration::from_secs(settings.local_unload_minutes as u64 * 60));
@@ -290,7 +298,7 @@ fn start(shared: &Arc<Shared>, settings: &Settings) -> Option<audio::Recording> 
     }
 }
 
-fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording) {
+fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording, format: bool) {
     *shared.recording_since.lock().unwrap() = None;
     let (samples, elapsed) = rec.finish();
     play_if(settings.sound_stop, Sound::Stop);
@@ -303,7 +311,7 @@ fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording) {
     let shared = shared.clone();
     let settings = settings.clone();
     std::thread::spawn(move || {
-        let entry = pipeline(&shared, &settings, &samples);
+        let entry = pipeline(&shared, &settings, &samples, format);
         shared.jobs.fetch_sub(1, Ordering::SeqCst);
         if let Some(entry) = entry {
             shared.history.lock().unwrap().push(entry);
@@ -313,7 +321,7 @@ fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording) {
     });
 }
 
-fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
+fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool) -> Option<Entry> {
     let timeout = Duration::from_secs(s.script_timeout_secs.max(1) as u64);
     let mut warnings = Vec::new();
     let mut entry = Entry {
@@ -409,6 +417,28 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32]) -> Option<Entry> {
                 step(&mut entry.steps, "Jev · error", e.clone(), StepState::Failed);
                 warnings.push(format!("Dictionary skipped: {e}"));
             }
+        }
+    }
+    match formatter::wanted(&text, force_format, s, &shared.http) {
+        Ok((false, why)) if !why.is_empty() => step(&mut entry.steps, "Format · not asked", why, StepState::Skipped),
+        Ok((false, _)) => {}
+        Ok((true, why)) => {
+            let started = Instant::now();
+            match formatter::format(&text, s, &shared.http) {
+                Ok(formatted) => {
+                    let ms = fmt_ms(started.elapsed().as_millis() as u64);
+                    step(&mut entry.steps, format!("Formatted · {ms}"), format!("{why}; {} formatted it in {ms}", s.format_model), StepState::Ok);
+                    text = formatted;
+                }
+                Err(e) => {
+                    step(&mut entry.steps, "Format · failed", e.clone(), StepState::Failed);
+                    warnings.push(format!("Formatting skipped: {e}"));
+                }
+            }
+        }
+        Err(e) => {
+            step(&mut entry.steps, "Format · check failed", e.clone(), StepState::Failed);
+            warnings.push(format!("Format check skipped: {e}"));
         }
     }
     let (text, runs) = hooks::filter(&s.scripts, text, timeout);

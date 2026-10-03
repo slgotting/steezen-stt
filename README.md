@@ -60,9 +60,10 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 |---|---|
 | Transcription | Service, API key (or `$OPENAI_API_KEY` / `$GROQ_API_KEY`), model (listed live from the provider), language, prompt, temperature. Local: download any whisper.cpp model, GPU toggle, threads, idle unload. |
 | Recording | Microphone, minimum recording length. |
-| Shortcuts | Push-to-talk, toggle, cancel. Click **Record** and press the combination. |
+| Shortcuts | Push-to-talk, push-to-talk + format (default **Alt+Shift+F**), toggle, cancel. Click **Record** and press the combination. See `HOTKEY-OPTIONS.md` for which combinations are safe. |
 | Output | Copy to clipboard, paste at cursor, press Enter after pasting, paste keystroke (Ctrl+V, Ctrl+Shift+V for terminals, Shift+Insert, or typing). |
 | Dictionary | Built-in corrector (the Rust port of `transcript-corrector`), on by default. Misheard words, their correct form, and alternative meanings. Jev classifies each occurrence in context; the app replaces it only above the threshold. Needs a Jev (TypeSafe) API key from https://console.typesafe.ai/keys (or `$TYPESAFE_API_KEY`), with a Test key button and a sentence test box. Without a key, Home shows a reminder you can paste the key into, snooze (1 day, doubling up to 30 days) or dismiss for good. |
+| AI formatting | Turns a dictation into tidy Markdown with a cheap OpenAI model (`gpt-4.1-mini` by default, editable system prompt). Runs after the dictionary and before your scripts, only when you hold the format hotkey, turn on **Format every transcript**, or ask out loud in your **first or last two sentences** ("…clean this up and put it in markdown"). Only those sentences are checked, and only when they contain a formatting word (format, markdown, clean, tidy, bullet, organise, …); Jev decides yes/no when you have a Jev key, otherwise the OpenAI model does. A request in the middle of the dictation is not noticed. Needs an OpenAI API key. |
 | Post-processing | Any number of your own scripts per stage, run in order, each with a Test button for text filters. |
 | Sounds & notifications | All off by default. |
 | General | Close to tray, start hidden, history size. |

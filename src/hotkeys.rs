@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     PushToTalk,
+    FormatPushToTalk,
     Toggle,
     Cancel,
 }
 
 type Getter = fn(&Settings) -> &str;
 
-const ACTIONS: [(Action, Getter); 3] = [
+const ACTIONS: [(Action, Getter); 4] = [
     (Action::PushToTalk, |s| &s.push_to_talk),
+    (Action::FormatPushToTalk, |s| &s.format_push_to_talk),
     (Action::Toggle, |s| &s.toggle_shortcut),
     (Action::Cancel, |s| &s.cancel_shortcut),
 ];
@@ -46,8 +48,8 @@ impl Hotkeys {
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             let Some((action, _)) = lookup.lock().unwrap().get(&e.id).copied() else { return };
             let cmd = match (action, e.state) {
-                (Action::PushToTalk, HotKeyState::Pressed) => Cmd::PttDown,
-                (Action::PushToTalk, HotKeyState::Released) => Cmd::PttUp,
+                (Action::PushToTalk | Action::FormatPushToTalk, HotKeyState::Pressed) => Cmd::PttDown(action == Action::FormatPushToTalk),
+                (Action::PushToTalk | Action::FormatPushToTalk, HotKeyState::Released) => Cmd::PttUp,
                 (Action::Toggle, HotKeyState::Pressed) => Cmd::Toggle,
                 (Action::Cancel, HotKeyState::Pressed) => Cmd::Cancel,
                 _ => return,

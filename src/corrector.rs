@@ -84,7 +84,7 @@ fn find_candidates<'a>(text: &str, rules: &'a [DictRule]) -> Vec<Candidate<'a>> 
     out
 }
 
-fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
+pub(crate) fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut pos = 0;
     for m in SENTENCE_END.find_iter(text) {
@@ -177,7 +177,7 @@ impl Cache {
 
 pub const KEY_URL: &str = "https://console.typesafe.ai/keys";
 
-fn post(http: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<Value, String> {
+pub(crate) fn post(http: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<Value, String> {
     let mut delay = std::time::Duration::from_millis(250);
     for attempt in 0..3 {
         let resp = http

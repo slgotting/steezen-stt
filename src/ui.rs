@@ -25,6 +25,7 @@ enum Section {
     Shortcuts,
     Output,
     Dictionary,
+    Formatting,
     Scripts,
     Feedback,
     General,
@@ -32,13 +33,14 @@ enum Section {
 
 const PAGES: [(Page, &str); 3] = [(Page::Home, "Home"), (Page::History, "History"), (Page::Settings, "Settings")];
 
-const SECTIONS: [(Section, &str, &str); 8] = [
+const SECTIONS: [(Section, &str, &str); 9] = [
     (Section::Transcription, "Transcription", "Where your audio goes and which model turns it into text."),
     (Section::Recording, "Recording", "Microphone and recording behaviour."),
     (Section::Shortcuts, "Shortcuts", "Global keys, e.g. Alt+Shift+D, Ctrl+Space or F9. Click Record and press the combination."),
     (Section::Output, "Output", "What happens to the final text, after the dictionary and every text-filter script have run."),
     (Section::Dictionary, "Dictionary", "Built-in corrector for words speech-to-text often gets wrong. Jev classifies each occurrence in context and the app replaces it only above the threshold. It runs on every transcript, before your scripts. No LLM rewrites your text."),
-    (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → your text filters, top to bottom → output → after-delivery scripts."),
+    (Section::Formatting, "AI formatting", "Turns a rambling dictation into tidy Markdown with a cheap OpenAI model. It runs after the dictionary and before your scripts, only when you ask for it."),
+    (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → AI formatting (when asked) → your text filters, top to bottom → output → after-delivery scripts."),
     (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything is off by default."),
     (Section::General, "General", "Window, tray and history."),
 ];
@@ -49,6 +51,11 @@ const OUTPUT_TOGGLES: [Toggle; 3] = [
     ("Copy transcript to clipboard", "Leave the final text on the clipboard after delivery.", |s| &mut s.output_clipboard),
     ("Paste transcript at cursor", "Paste into the focused window when transcription finishes.", |s| &mut s.output_cursor),
     ("Press Enter after pasting", "Send an Enter keystroke after the text is pasted (e.g. to submit a chat message).", |s| &mut s.output_enter),
+];
+
+const FORMAT_TOGGLES: [Toggle; 2] = [
+    ("Format when I ask for it out loud", "Say it in your first or last two sentences, e.g. \"…format this as Markdown.\" A request in the middle of a dictation is not noticed.", |s| &mut s.format_voice),
+    ("Format every transcript", "Clean up every transcript, with no hotkey or spoken request needed.", |s| &mut s.format_always),
 ];
 
 const FEEDBACK_TOGGLES: [Toggle; 6] = [
@@ -62,8 +69,9 @@ const FEEDBACK_TOGGLES: [Toggle; 6] = [
 
 type Field = fn(&mut Settings) -> &mut String;
 
-const SHORTCUTS: [(&str, &str, Field); 3] = [
+const SHORTCUTS: [(&str, &str, Field); 4] = [
     ("Push to talk", "Hold to record; release to transcribe.", |s| &mut s.push_to_talk),
+    ("Push to talk + format", "Hold to record; release to transcribe and have AI format the text as Markdown.", |s| &mut s.format_push_to_talk),
     ("Toggle recording", "Press once to start, again to stop. Optional.", |s| &mut s.toggle_shortcut),
     ("Cancel recording", "Discard the current recording. Optional.", |s| &mut s.cancel_shortcut),
 ];
@@ -447,6 +455,7 @@ impl App {
                 Section::Shortcuts => self.shortcut_settings(ui),
                 Section::Output => self.output_settings(ui),
                 Section::Dictionary => self.dictionary_settings(ui),
+                Section::Formatting => self.format_settings(ui),
                 Section::Scripts => self.script_settings(ui),
                 Section::Feedback => toggles(ui, &mut self.draft, &FEEDBACK_TOGGLES),
                 Section::General => self.general_settings(ui),
@@ -668,6 +677,27 @@ impl App {
         if let Some(out) = self.test_output.lock().unwrap().as_ref() {
             ui.label(RichText::new(out).color(ACCENT));
         }
+    }
+
+    fn format_settings(&mut self, ui: &mut Ui) {
+        toggles(ui, &mut self.draft, &FORMAT_TOGGLES);
+        ui.label(muted("To ask out loud, say it in your first or last two sentences, e.g. \"…and format this as Markdown.\" Only those sentences are checked, by Jev when you have a Jev key, otherwise by the model below. A request in the middle is not noticed; use the format hotkey instead.").small());
+        let format_key = self.draft.format_push_to_talk.trim();
+        ui.label(muted(if format_key.is_empty() { "No format hotkey set (Settings → Shortcuts).".into() } else { format!("Or hold {format_key} instead of your usual push-to-talk key.") }).small());
+        if self.draft.api_key(Provider::OpenAI).is_empty() {
+            ui.label(RichText::new("Formatting needs an OpenAI API key: add one in Settings → Transcription (choose OpenAI to see the field) or set $OPENAI_API_KEY.").color(AMBER));
+        }
+        ui.horizontal(|ui| {
+            ui.label("OpenAI model");
+            ui.add(egui::TextEdit::singleline(&mut self.draft.format_model).desired_width(200.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Instructions (system prompt)");
+            if ui.small_button("Reset").clicked() {
+                self.draft.format_prompt = crate::formatter::DEFAULT_PROMPT.into();
+            }
+        });
+        ui.add(egui::TextEdit::multiline(&mut self.draft.format_prompt).desired_width(f32::INFINITY).desired_rows(6));
     }
 
     fn script_settings(&mut self, ui: &mut Ui) {

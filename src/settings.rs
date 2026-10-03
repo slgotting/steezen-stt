@@ -193,6 +193,7 @@ pub struct Settings {
     pub push_to_talk: String,
     pub toggle_shortcut: String,
     pub cancel_shortcut: String,
+    pub format_push_to_talk: String,
 
     pub output_clipboard: bool,
     pub output_cursor: bool,
@@ -210,6 +211,11 @@ pub struct Settings {
     pub corrector_model: String,
     pub dictionary: Vec<DictRule>,
     pub jev_reminder: JevReminder,
+
+    pub format_voice: bool,
+    pub format_always: bool,
+    pub format_model: String,
+    pub format_prompt: String,
 
     pub scripts: Vec<Script>,
     pub script_timeout_secs: u32,
@@ -240,6 +246,7 @@ impl Default for Settings {
             push_to_talk: "Alt+Shift+D".into(),
             toggle_shortcut: String::new(),
             cancel_shortcut: String::new(),
+            format_push_to_talk: "Alt+Shift+F".into(),
             output_clipboard: true,
             output_cursor: true,
             output_enter: false,
@@ -253,6 +260,10 @@ impl Default for Settings {
             corrector_enabled: true,
             corrector_model: "jev-latest".into(),
             jev_reminder: JevReminder::default(),
+            format_voice: true,
+            format_always: false,
+            format_model: "gpt-4.1-mini".into(),
+            format_prompt: crate::formatter::DEFAULT_PROMPT.into(),
             dictionary: serde_json::from_str(include_str!("../assets/default_dictionary.json")).unwrap_or_default(),
             scripts: Vec::new(),
             script_timeout_secs: 10,

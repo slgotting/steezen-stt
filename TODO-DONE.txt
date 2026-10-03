@@ -19,4 +19,5 @@ Added a build.rs check that explains a missing CUDA_PATH on Windows cuda builds,
 	  called `Result::unwrap()` on an `Err` value: NotPresent
 	  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 	warning: build failed, waiting for other jobs to finish...
-	'''
+	'''Added AI formatting: a "push to talk + format" hotkey (Alt+Shift+F), a "format every transcript" toggle, and spoken requests in the first/last two sentences classified by Jev (or OpenAI without a Jev key), formatted to Markdown by gpt-4.1-mini with an editable system prompt; hotkey options written to HOTKEY-OPTIONS.md and a Zen to-do added to review them.
+	- Use Jev to classify the first and last sentences for a spoken request to format the dictation (e.g. "put this in a markdown file"), then format with a cheap OpenAI model; warn the user it must be said at the start or end; add a toggle to always format with a cleanup system prompt; add a hotkey variant that means "format this"; avoid Ctrl in it (Ctrl+D kills terminals), maybe move to Alt+Shift+T/S; leave a notes file of available hotkeys and ping the Zen app with a to-do to check it.
