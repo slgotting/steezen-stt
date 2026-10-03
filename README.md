@@ -37,6 +37,12 @@ Linux build deps (Debian/Ubuntu): `cmake libclang-dev libasound2-dev libxdo-dev 
    cargo build --release
    ```
    The app is `target\release\steezen-stt.exe`, a single file.
+
+   For an NVIDIA GPU build, also install the CUDA Toolkit, after the Build Tools so it adds its Visual Studio integration:
+   ```powershell
+   winget install Nvidia.CUDA
+   ```
+   Open a new terminal (the installer sets `CUDA_PATH`, which the build needs), then `cargo build --release --features cuda`.
 4. Make a Start menu shortcut to it. To start at login, put a shortcut in `shell:startup` and enable *Settings → General → Start hidden in the tray*.
 
 On Windows, settings live in `%APPDATA%\steezen-stt` and scripts run through `cmd /C`, e.g. `python C:\tools\fix.py`.

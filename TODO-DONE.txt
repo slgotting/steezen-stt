@@ -1,0 +1,22 @@
+Added a build.rs check that explains a missing CUDA_PATH on Windows cuda builds, and documented installing the CUDA Toolkit in the README.
+	- Fix this for Windows:
+	'''
+	  Compiling windows-future v0.3.2
+	   Compiling url v2.5.8
+	error: failed to run custom build command for `whisper-rs-sys v0.15.0`
+	
+	Caused by:
+	  process didn't exit successfully: `C:\Users\Steezen\repos\steezen-stt\target\release\build\whisper-rs-sys-4d44e60b32e2f522\build-script-build` (exit code: 101)
+	  --- stdout
+	  cargo:rustc-link-lib=cublas
+	  cargo:rustc-link-lib=cudart
+	  cargo:rustc-link-lib=cublasLt
+	  cargo:rustc-link-lib=cuda
+	
+	  --- stderr
+	
+	  thread 'main' (10348) panicked at C:\Users\Steezen\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\whisper-rs-sys-0.15.0\build.rs:59:69:
+	  called `Result::unwrap()` on an `Err` value: NotPresent
+	  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+	warning: build failed, waiting for other jobs to finish...
+	'''
