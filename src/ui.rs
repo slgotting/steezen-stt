@@ -1,4 +1,5 @@
 use crate::corrector;
+use crate::formatter::{self, Description};
 use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
@@ -10,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PADDING: f32 = 8.0;
+const GENERATING: &str = "Generating…";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -93,6 +95,7 @@ pub struct App {
     installed: Vec<String>,
     key_input: String,
     script_tests: Arc<Mutex<std::collections::HashMap<usize, String>>>,
+    generating: Arc<Mutex<std::collections::HashMap<usize, (String, Option<Result<Description, String>>)>>>,
 }
 
 impl App {
@@ -125,6 +128,7 @@ impl App {
             installed: transcribe::installed_local_models(),
             key_input: String::new(),
             script_tests: Arc::default(),
+            generating: Arc::default(),
             shared,
         }
     }
@@ -632,7 +636,22 @@ impl App {
         self.dictionary_test(ui);
         ui.separator();
         let mut remove = None;
+        let key = self.draft.api_key(Provider::OpenAI);
+        let mut generating = self.generating.lock().unwrap();
         for (i, rule) in self.draft.dictionary.iter_mut().enumerate() {
+            let stale = generating.get(&i).is_some_and(|(word, _)| *word != rule.word);
+            if stale || matches!(generating.get(&i), Some((_, Some(Ok(_))))) {
+                if let Some((_, Some(Ok(d)))) = generating.remove(&i).filter(|_| !stale) {
+                    d.apply(rule);
+                }
+            }
+            let state = generating.get(&i).map(|(_, r)| r.as_ref().map(|r| r.as_ref().err().cloned().unwrap_or_default()));
+            let blocked = match &state {
+                Some(None) => Some(GENERATING),
+                _ if key.is_empty() => Some("Needs an OpenAI API key (Settings → Transcription, or $OPENAI_API_KEY)"),
+                _ if rule.word.trim().is_empty() => Some("Type the correct word first"),
+                _ => None,
+            };
             let id = ui.make_persistent_id(("rule", i));
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
                 .show_header(ui, |ui| {
@@ -642,14 +661,29 @@ impl App {
                     ui.label(RichText::new(format!("misheard as {}", rule.triggers)).color(MUTED));
                 })
                 .body(|ui| {
-                    if rule_editor(ui, rule, i) {
+                    let (delete, generate) = rule_editor(ui, rule, i, blocked);
+                    if let Some(Some(e)) = &state {
+                        ui.label(RichText::new(e).color(RED).small());
+                    }
+                    if delete {
                         remove = Some(i);
+                    }
+                    if generate {
+                        let (rule, key, model, out, shared) = (rule.clone(), key.clone(), self.draft.format_model.clone(), self.generating.clone(), self.shared.clone());
+                        generating.insert(i, (rule.word.clone(), None));
+                        std::thread::spawn(move || {
+                            let result = formatter::describe(&rule, &key, &model, &shared.http);
+                            out.lock().unwrap().insert(i, (rule.word, Some(result)));
+                            shared.repaint();
+                        });
                     }
                 });
         }
         if let Some(i) = remove {
             self.draft.dictionary.remove(i);
+            generating.clear();
         }
+        drop(generating);
         if ui.button("➕ Add word").clicked() {
             self.draft.dictionary.push(DictRule::default());
         }
@@ -821,8 +855,9 @@ fn model_combo(ui: &mut Ui, shared: &Shared, s: &mut Settings, installed: &[Stri
     });
 }
 
-fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize) -> bool {
+fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize, blocked: Option<&str>) -> (bool, bool) {
     let mut remove = false;
+    let mut generate = false;
     let field = (ui.available_width() - 110.0).max(200.0);
     egui::Grid::new(("rule-grid", i)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
         ui.label("Correct word");
@@ -856,6 +891,9 @@ fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize) -> bool {
         rule.alternatives.remove(j);
     }
     ui.horizontal(|ui| {
+        let button = ui.add_enabled(blocked.is_none(), egui::Button::new(if blocked == Some(GENERATING) { GENERATING } else { "✨ Generate" }).small());
+        let button = button.on_hover_text("Fill in the meaning, background and other meanings with OpenAI from the word (and what you typed in Means)");
+        generate = button.on_disabled_hover_text(blocked.unwrap_or_default()).clicked();
         if ui.small_button("➕ Add meaning").clicked() {
             rule.alternatives.push(Alternative::default());
         }
@@ -863,7 +901,7 @@ fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize) -> bool {
             remove = true;
         }
     });
-    remove
+    (remove, generate)
 }
 
 fn capture_combo(ui: &mut Ui) -> Option<String> {
