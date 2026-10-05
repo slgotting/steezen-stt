@@ -892,7 +892,7 @@ fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize, blocked: Option<&str>
     }
     ui.horizontal(|ui| {
         let button = ui.add_enabled(blocked.is_none(), egui::Button::new(if blocked == Some(GENERATING) { GENERATING } else { "✨ Generate" }).small());
-        let button = button.on_hover_text("Fill in the meaning, background and other meanings with OpenAI from the word (and what you typed in Means)");
+        let button = button.on_hover_text("Fill in the meaning, background and other meanings with OpenAI from the word (and what you typed in Means), and add more words it may be misheard as");
         generate = button.on_disabled_hover_text(blocked.unwrap_or_default()).clicked();
         if ui.small_button("➕ Add meaning").clicked() {
             rule.alternatives.push(Alternative::default());

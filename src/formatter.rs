@@ -11,7 +11,7 @@ const EDGE_SENTENCES: usize = 2;
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const QUESTION: &str = "`start` holds the first sentences and `end` the last sentences of a speech-to-text dictation. Is the speaker telling the dictation app itself to format, clean up or organise this very dictation (e.g. \"put this in markdown\", \"clean this up\"), as opposed to formatting being part of what they are dictating (e.g. asking a colleague to format a report or a date)?";
 
-const DESCRIBE_PROMPT: &str = "You write entries for a speech-to-text correction dictionary. A classifier reads each entry to decide, from the surrounding sentence, whether a transcribed word should be replaced by the correct word. You get the correct word, the words speech recognition mishears it as (may be empty) and the user's notes (may be empty; they say which sense of the word is meant). Reply with a JSON object: \"meaning\": one line saying what the correct word refers to and how a speaker would use it, e.g. \"Anthropic's AI assistant, which the speaker asks, tells or uses to write, fix or analyze things\"; \"triggers\": when no misheard words were given, the 2-4 words or spellings speech recognition most likely writes instead (think about how the word sounds aloud, including how people actually pronounce abbreviations), each different from the correct word ignoring case, otherwise exactly the given ones; \"alternatives\": for each trigger that is a real word or name with its own legitimate meaning, {\"word\", \"meaning\"} describing those meanings in one line; \"context\": one or two sentences contrasting the correct word with the alternatives so they can be told apart.";
+const DESCRIBE_PROMPT: &str = "You write entries for a speech-to-text correction dictionary. A classifier reads each entry to decide, from the surrounding sentence, whether a transcribed word should be replaced by the correct word. You get the correct word, the words speech recognition mishears it as (may be empty) and the user's notes (may be empty; they say which sense of the word is meant). Reply with a JSON object: \"meaning\": one line saying what the correct word refers to and how a speaker would use it, e.g. \"Anthropic's AI assistant, which the speaker asks, tells or uses to write, fix or analyze things\"; \"triggers\": 2-5 more words, spellings or short phrases speech recognition is likely to write instead of the correct word, not repeating the given ones (think about how the word sounds aloud, including how people actually pronounce abbreviations, and about real words that sound alike), each different from the correct word ignoring case; only sound-alikes, never synonyms, expansions or the full form of an abbreviation; \"alternatives\": for each given or new misheard word that is a real word or name with its own legitimate meaning, {\"word\", \"meaning\"} describing those meanings in one line; \"context\": one or two sentences contrasting the correct word with the alternatives so they can be told apart.";
 
 #[derive(Debug, Deserialize)]
 pub struct Description {
@@ -27,16 +27,13 @@ pub struct Description {
 impl Description {
     pub fn apply(self, rule: &mut DictRule) {
         let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
-        if rule.triggers.trim().is_empty() {
-            let mut triggers: Vec<String> = Vec::new();
-            for t in self.triggers.iter().map(|t| t.trim().to_lowercase()).filter(|t| !same(t, &rule.word)) {
-                if !triggers.contains(&t) {
-                    triggers.push(t);
-                }
+        let mut triggers = rule.trigger_list();
+        for t in self.triggers.iter().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).filter(|t| !t.is_empty() && !same(t, &rule.word)) {
+            if !triggers.iter().any(|e| same(e, &t)) {
+                triggers.push(t);
             }
-            rule.triggers = triggers.join(", ");
         }
-        let triggers = rule.trigger_list();
+        rule.triggers = triggers.join(", ");
         rule.meaning = self.meaning;
         rule.alternatives = self.alternatives.into_iter().filter(|a| triggers.iter().any(|t| same(t, &a.word))).collect();
         rule.context = self.context;
@@ -167,9 +164,9 @@ mod tests {
     #[ignore = "calls OpenAI with the saved settings"]
     fn live_describe() {
         let s = Settings::load();
-        let mut rule = DictRule { word: "env".into(), ..DictRule::default() };
+        let mut rule = DictRule { word: "env".into(), triggers: "envy".into(), ..DictRule::default() };
         describe(&rule, &s.api_key(Provider::OpenAI), &s.format_model, &Client::new()).unwrap().apply(&mut rule);
         println!("{rule:#?}");
-        assert!(!rule.meaning.is_empty() && !rule.triggers.is_empty() && !rule.context.is_empty());
+        assert!(rule.triggers.starts_with("envy, ") && !rule.meaning.is_empty() && !rule.context.is_empty());
     }
 }
