@@ -83,6 +83,7 @@ pub struct App {
     draft: Settings,
     dirty_since: Option<Instant>,
     hide_on_start: bool,
+    autostart: crate::autostart::Status,
     page: Page,
     section: Section,
     hotkeys: Hotkeys,
@@ -102,7 +103,10 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, shared: Arc<Shared>) -> Self {
         let _ = shared.ctx.set(cc.egui_ctx.clone());
         theme::install(&cc.egui_ctx);
-        let draft = shared.settings();
+        let mut draft = shared.settings();
+        if draft.start_at_login && crate::autostart::disabled_by_os() {
+            draft.start_at_login = false;
+        }
         let mut hotkeys = Hotkeys::new(shared.clone());
         hotkeys.sync(&draft);
         let tray = Tray::new(shared.clone());
@@ -112,8 +116,9 @@ impl App {
         if draft.corrector_enabled && !draft.typesafe_key().is_empty() {
             shared.check_key(draft.typesafe_key(), draft.corrector_model.clone(), false);
         }
-        let app = Self {
+        let mut app = Self {
             hide_on_start: draft.start_hidden || crate::autostart::launched_hidden(),
+            autostart: Default::default(),
             draft,
             dirty_since: None,
             page: Page::Home,
@@ -135,9 +140,10 @@ impl App {
         app
     }
 
-    fn apply_autostart(&self) {
-        if let Err(e) = crate::autostart::apply(self.draft.start_at_login) {
-            self.shared.set_notice(format!("Couldn't update start at login: {e}"), true);
+    fn apply_autostart(&mut self) {
+        match crate::autostart::apply(self.draft.start_at_login) {
+            Ok(status) => self.autostart = status,
+            Err(e) => self.shared.set_notice(format!("Couldn't update start at login: {e}"), true),
         }
     }
 
@@ -819,6 +825,10 @@ impl App {
     fn general_settings(&mut self, ui: &mut Ui) {
         ui.checkbox(&mut self.draft.close_to_tray, "Closing the window hides it to the tray");
         ui.checkbox(&mut self.draft.start_at_login, "Start at login (hidden in the tray)");
+        if !self.autostart.text.is_empty() {
+            let text = RichText::new(&self.autostart.text).small().color(if self.autostart.warn { AMBER } else { MUTED });
+            ui.add(egui::Label::new(text).selectable(true));
+        }
         ui.checkbox(&mut self.draft.start_hidden, "Start hidden in the tray");
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.draft.history_limit).range(1..=100_000));

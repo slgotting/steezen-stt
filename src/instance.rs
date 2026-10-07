@@ -35,8 +35,8 @@ mod ipc {
     }
 }
 
-pub fn signal_existing() -> bool {
-    ipc::connect().and_then(|mut s| s.write_all(b"show")).is_ok()
+pub fn signal_existing(show: bool) -> bool {
+    ipc::connect().and_then(|mut s| s.write_all(if show { b"show" } else { b"ping" })).is_ok()
 }
 
 pub fn listen(shared: Arc<Shared>) {

@@ -54,6 +54,17 @@ The toolchain is pinned in `rust-toolchain.toml`. Dependency versions are pinned
 Run `steezen-stt` (symlinked from `~/bin` to `target/release/steezen-stt`, so rebuilds take effect immediately). Running it again while it is open, even when hidden in the tray, brings the existing window to the front instead of starting a second copy.
 
 Hold **Alt+Shift+D**, speak, release. The text is pasted into the focused window.
+### Start at login
+
+On by default; the app launches hidden in the tray. *Settings → General* shows how it was set up:
+
+- **Windows:** the `HKCU\…\CurrentVersion\Run` registry key, which appears in Task Manager → Startup apps. Disabling it there turns the setting off at the next launch; re-enabling the setting clears Task Manager's disabled flag.
+- **Linux desktops** (GNOME, KDE, XFCE, Cinnamon, MATE, LXQt, Budgie, …): `~/.config/autostart/steezen-stt.desktop`. Turning it off in the desktop's startup-apps tool turns the setting off.
+- **i3, sway, Hyprland, bspwm**, which ignore that folder: a marked `exec` line is added to the window manager's config, unless the config already runs `dex --autostart`.
+- **Other window managers:** the settings page shows the command to add to its startup.
+
+The entry is refreshed on every launch, so it follows the binary if it moves (an AppImage uses its own path). A login launch that finds the app already running exits without showing the window.
+
 Everything is configured in **Settings**; changes save automatically to `~/.config/steezen-stt/settings.json` (mode 600).
 
 | Section | What it does |
@@ -66,7 +77,7 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 | AI formatting | Turns a dictation into tidy Markdown with a cheap OpenAI model (`gpt-4.1-mini` by default, editable system prompt). Runs after the dictionary and before your scripts, only when you hold the format hotkey, turn on **Format every transcript**, or ask out loud in your **first or last two sentences** ("…clean this up and put it in markdown"). Only those sentences are checked, and only when they contain a formatting word (format, markdown, clean, tidy, bullet, organise, …); Jev decides yes/no when you have a Jev key, otherwise the OpenAI model does. A request in the middle of the dictation is not noticed. Needs an OpenAI API key. |
 | Post-processing | Any number of your own scripts per stage, run in order, each with a Test button for text filters. |
 | Sounds & notifications | All off by default. |
-| General | Start at login (on by default, launches hidden in the tray; XDG autostart on Linux, the `HKCU\…\Run` key on Windows), close to tray, start hidden, history size. |
+| General | Start at login (on by default, see below), close to tray, start hidden, history size. |
 
 ### Post-processing scripts
 

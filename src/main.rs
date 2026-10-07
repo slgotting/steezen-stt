@@ -18,7 +18,7 @@ mod ui;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
-    if instance::signal_existing() {
+    if instance::signal_existing(!autostart::launched_hidden()) {
         return Ok(());
     }
     #[cfg(feature = "local")]
