@@ -43,7 +43,7 @@ Linux build deps (Debian/Ubuntu): `cmake libclang-dev libasound2-dev libxdo-dev 
    winget install Nvidia.CUDA
    ```
    Open a new terminal (the installer sets `CUDA_PATH`, which the build needs), then `cargo build --release --features cuda`.
-4. Make a Start menu shortcut to it. To start at login, put a shortcut in `shell:startup` and enable *Settings → General → Start hidden in the tray*.
+4. Make a Start menu shortcut to it. It starts at login by default; turn that off in *Settings → General → Start at login*.
 
 On Windows, settings live in `%APPDATA%\steezen-stt` and scripts run through `cmd /C`, e.g. `python C:\tools\fix.py`.
 
@@ -66,7 +66,7 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 | AI formatting | Turns a dictation into tidy Markdown with a cheap OpenAI model (`gpt-4.1-mini` by default, editable system prompt). Runs after the dictionary and before your scripts, only when you hold the format hotkey, turn on **Format every transcript**, or ask out loud in your **first or last two sentences** ("…clean this up and put it in markdown"). Only those sentences are checked, and only when they contain a formatting word (format, markdown, clean, tidy, bullet, organise, …); Jev decides yes/no when you have a Jev key, otherwise the OpenAI model does. A request in the middle of the dictation is not noticed. Needs an OpenAI API key. |
 | Post-processing | Any number of your own scripts per stage, run in order, each with a Test button for text filters. |
 | Sounds & notifications | All off by default. |
-| General | Close to tray, start hidden, history size. |
+| General | Start at login (on by default, launches hidden in the tray; XDG autostart on Linux, the `HKCU\…\Run` key on Windows), close to tray, start hidden, history size. |
 
 ### Post-processing scripts
 

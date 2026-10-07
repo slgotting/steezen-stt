@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod audio;
+mod autostart;
 mod corrector;
 mod engine;
 mod formatter;

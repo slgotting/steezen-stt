@@ -112,8 +112,8 @@ impl App {
         if draft.corrector_enabled && !draft.typesafe_key().is_empty() {
             shared.check_key(draft.typesafe_key(), draft.corrector_model.clone(), false);
         }
-        Self {
-            hide_on_start: draft.start_hidden,
+        let app = Self {
+            hide_on_start: draft.start_hidden || crate::autostart::launched_hidden(),
             draft,
             dirty_since: None,
             page: Page::Home,
@@ -130,12 +130,24 @@ impl App {
             script_tests: Arc::default(),
             generating: Arc::default(),
             shared,
+        };
+        app.apply_autostart();
+        app
+    }
+
+    fn apply_autostart(&self) {
+        if let Err(e) = crate::autostart::apply(self.draft.start_at_login) {
+            self.shared.set_notice(format!("Couldn't update start at login: {e}"), true);
         }
     }
 
     fn persist(&mut self, ctx: &egui::Context) {
         if *self.shared.settings.read().unwrap() != self.draft {
+            let login_changed = self.shared.settings.read().unwrap().start_at_login != self.draft.start_at_login;
             *self.shared.settings.write().unwrap() = self.draft.clone();
+            if login_changed {
+                self.apply_autostart();
+            }
             self.dirty_since = Some(Instant::now());
             self.hotkeys.sync(&self.draft);
         }
@@ -806,6 +818,7 @@ impl App {
 
     fn general_settings(&mut self, ui: &mut Ui) {
         ui.checkbox(&mut self.draft.close_to_tray, "Closing the window hides it to the tray");
+        ui.checkbox(&mut self.draft.start_at_login, "Start at login (hidden in the tray)");
         ui.checkbox(&mut self.draft.start_hidden, "Start hidden in the tray");
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.draft.history_limit).range(1..=100_000));

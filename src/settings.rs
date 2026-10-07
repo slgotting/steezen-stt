@@ -223,6 +223,7 @@ pub struct Settings {
     pub history_limit: usize,
     pub close_to_tray: bool,
     pub start_hidden: bool,
+    pub start_at_login: bool,
 }
 
 impl Default for Settings {
@@ -270,6 +271,7 @@ impl Default for Settings {
             history_limit: 200,
             close_to_tray: true,
             start_hidden: false,
+            start_at_login: true,
         }
     }
 }
