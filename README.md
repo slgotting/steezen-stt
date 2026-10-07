@@ -54,6 +54,10 @@ The toolchain is pinned in `rust-toolchain.toml`. Dependency versions are pinned
 Run `steezen-stt` (symlinked from `~/bin` to `target/release/steezen-stt`, so rebuilds take effect immediately). Running it again while it is open, even when hidden in the tray, brings the existing window to the front instead of starting a second copy.
 
 Hold **Alt+Shift+D**, speak, release. The text is pasted into the focused window.
+### Transcribe a file
+
+`steezen-stt transcribe <file.wav> [--prompt <words>]` transcribes a 16-bit PCM WAV with the service, model and keys chosen in Settings and prints the text (errors go to stderr, exit code 1). `--prompt` adds vocabulary hints to the Settings prompt. The dictionary and formatting are not applied. It runs without opening the window, alongside a running copy. Zen's runner uses it when Zen's transcription backend is set to steezen-stt.
+
 ### Start at login
 
 On by default; the app launches hidden in the tray. *Settings → General* shows how it was set up:

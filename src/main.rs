@@ -2,6 +2,7 @@
 
 mod audio;
 mod autostart;
+mod cli;
 mod corrector;
 mod engine;
 mod formatter;
@@ -18,6 +19,10 @@ mod ui;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "transcribe") {
+        std::process::exit(cli::transcribe(&args[1..]));
+    }
     if instance::signal_existing(!autostart::launched_hidden()) {
         return Ok(());
     }

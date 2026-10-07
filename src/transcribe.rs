@@ -198,18 +198,10 @@ impl LocalEngine {
 mod tests {
     use super::*;
 
-    fn read_wav(bytes: &[u8]) -> (Vec<f32>, u32) {
-        let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
-        let channels = u16::from_le_bytes(bytes[22..24].try_into().unwrap()) as usize;
-        let data = bytes.windows(4).position(|w| w == b"data").unwrap() + 8;
-        let samples: Vec<f32> = bytes[data..].as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c) as f32 / i16::MAX as f32).collect();
-        (samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect(), rate)
-    }
-
     #[test]
     #[ignore = "needs WH_TEST_WAV and a downloaded model"]
     fn local_transcribes_wav() {
-        let (samples, rate) = read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap());
+        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
         let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
         let settings = Settings { provider: Provider::Local, local_model: std::env::var("WH_TEST_MODEL").unwrap(), ..Settings::default() };
         let text = transcribe(&samples, &settings, &Client::new(), &LocalEngine::default()).unwrap();
