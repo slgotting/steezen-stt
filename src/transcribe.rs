@@ -85,8 +85,9 @@ pub fn local_model_info(name: &str) -> Option<LocalModelInfo> {
     Some(LocalModelInfo { quality, speed, size_mb: (params * bytes) as u32, notes })
 }
 
-pub fn download_model(name: &str, http: &Client, progress: &Mutex<Option<(String, u64, u64)>>) -> Result<(), String> {
+pub fn download_model(name: &str, progress: &Mutex<Option<(String, u64, u64)>>) -> Result<(), String> {
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{name}");
+    let http = Client::builder().connect_timeout(Duration::from_secs(10)).timeout(None).build().map_err(|e| e.to_string())?;
     let mut resp = http.get(url).send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
     let total = resp.content_length().unwrap_or(0);
     std::fs::create_dir_all(models_dir()).map_err(|e| e.to_string())?;
@@ -255,3 +256,4 @@ mod info_tests {
         assert!(local_model_info("whisper-1").is_none());
     }
 }
+

@@ -552,6 +552,7 @@ impl App {
         if download.is_none() && !downloaded {
             self.installed = transcribe::installed_local_models();
         }
+        notice(ui, &self.shared);
         let gpu_build = cfg!(any(feature = "cuda", feature = "vulkan"));
         ui.checkbox(&mut self.draft.local_use_gpu, "Use GPU when available");
         if !gpu_build {

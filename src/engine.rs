@@ -206,7 +206,7 @@ impl Shared {
         let shared = self.clone();
         std::thread::spawn(move || {
             *shared.download.lock().unwrap() = Some((name.clone(), 0, 0));
-            let result = transcribe::download_model(&name, &shared.http, &shared.download);
+            let result = transcribe::download_model(&name, &shared.download);
             *shared.download.lock().unwrap() = None;
             match result {
                 Ok(()) => shared.set_notice(format!("Downloaded {name}"), false),
