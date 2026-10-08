@@ -378,7 +378,7 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool, 
         }
     }
 
-    let attempts = transcribe::transcribe_with_fallback(samples, s, &shared.http, &shared.local);
+    let attempts = transcribe::transcribe_with_fallback(samples, s, &shared.local);
     for (i, a) in attempts.iter().enumerate() {
         let label = if i == 0 { a.provider.info().label.to_string() } else { format!("Fallback {}", a.model) };
         let ms = fmt_ms(a.ms);

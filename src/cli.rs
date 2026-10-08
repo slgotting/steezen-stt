@@ -33,8 +33,7 @@ pub fn transcribe(args: &[String]) -> i32 {
         .map_err(|e| format!("cannot read {file}: {e}"))
         .and_then(|bytes| read_wav(&bytes))
         .and_then(|(samples, rate)| {
-            let http = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default();
-            let mut attempts = transcribe_with_fallback(&resample(&samples, rate, WHISPER_RATE), &settings, &http, &LocalEngine::default());
+            let mut attempts = transcribe_with_fallback(&resample(&samples, rate, WHISPER_RATE), &settings, &LocalEngine::default());
             let last = attempts.pop().map(|a| a.result).unwrap_or_else(|| Err("nothing to try".into()));
             for a in &attempts {
                 eprintln!("{} ({}) failed: {}", a.provider.info().label, a.model, a.result.as_ref().err().map_or("", |e| e));

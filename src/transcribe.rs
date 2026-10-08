@@ -85,10 +85,13 @@ pub fn local_model_info(name: &str) -> Option<LocalModelInfo> {
     Some(LocalModelInfo { quality, speed, size_mb: (params * bytes) as u32, notes })
 }
 
+fn untimed_client() -> Result<Client, String> {
+    Client::builder().connect_timeout(Duration::from_secs(10)).timeout(None).build().map_err(|e| e.to_string())
+}
+
 pub fn download_model(name: &str, progress: &Mutex<Option<(String, u64, u64)>>) -> Result<(), String> {
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{name}");
-    let http = Client::builder().connect_timeout(Duration::from_secs(10)).timeout(None).build().map_err(|e| e.to_string())?;
-    let mut resp = http.get(url).send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    let mut resp = untimed_client()?.get(url).send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
     let total = resp.content_length().unwrap_or(0);
     std::fs::create_dir_all(models_dir()).map_err(|e| e.to_string())?;
     let part = models_dir().join(format!("{name}.part"));
@@ -124,11 +127,11 @@ fn attempts(settings: &Settings) -> Vec<Settings> {
     list
 }
 
-pub fn transcribe_with_fallback(samples: &[f32], settings: &Settings, http: &Client, local: &LocalEngine) -> Vec<Attempt> {
+pub fn transcribe_with_fallback(samples: &[f32], settings: &Settings, local: &LocalEngine) -> Vec<Attempt> {
     let mut out: Vec<Attempt> = Vec::new();
     for s in attempts(settings) {
         let started = Instant::now();
-        let result = transcribe(samples, &s, http, local);
+        let result = transcribe(samples, &s, local);
         let done = result.is_ok();
         out.push(Attempt { provider: s.provider, model: s.model(s.provider).to_string(), ms: started.elapsed().as_millis() as u64, result });
         if done {
@@ -138,14 +141,14 @@ pub fn transcribe_with_fallback(samples: &[f32], settings: &Settings, http: &Cli
     out
 }
 
-pub fn transcribe(samples: &[f32], settings: &Settings, http: &Client, local: &LocalEngine) -> Result<String, String> {
+pub fn transcribe(samples: &[f32], settings: &Settings, local: &LocalEngine) -> Result<String, String> {
     match settings.provider {
         Provider::Local => local.transcribe(samples, settings),
-        p => transcribe_cloud(p, samples, settings, http),
+        p => transcribe_cloud(p, samples, settings),
     }
 }
 
-fn transcribe_cloud(provider: Provider, samples: &[f32], settings: &Settings, http: &Client) -> Result<String, String> {
+fn transcribe_cloud(provider: Provider, samples: &[f32], settings: &Settings) -> Result<String, String> {
     let info = provider.info();
     let key = settings.api_key(provider);
     if key.is_empty() {
@@ -162,11 +165,10 @@ fn transcribe_cloud(provider: Provider, samples: &[f32], settings: &Settings, ht
             form = form.text(field, value.trim().to_string());
         }
     }
-    let resp = http
+    let resp = untimed_client()?
         .post(format!("{}/audio/transcriptions", info.base_url))
         .bearer_auth(key)
         .multipart(form)
-        .timeout(Duration::from_secs(settings.cloud_timeout_secs.max(5) as u64))
         .send()
         .map_err(|e| format!("{} request failed: {e}", info.label))?;
     let status = resp.status();
@@ -267,7 +269,7 @@ mod tests {
         let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
         let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
         let settings = Settings { provider: Provider::Local, local_model: std::env::var("WH_TEST_MODEL").unwrap(), ..Settings::default() };
-        let text = transcribe(&samples, &settings, &Client::new(), &LocalEngine::default()).unwrap();
+        let text = transcribe(&samples, &settings, &LocalEngine::default()).unwrap();
         println!("TRANSCRIPT: {text}");
         assert!(text.to_lowercase().contains("cloud"));
     }
@@ -279,7 +281,7 @@ mod tests {
         let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
         let model = std::env::var("WH_TEST_MODEL").unwrap();
         let settings = Settings { provider: Provider::OpenAI, openai_api_key: String::new(), local_fallback: vec!["ggml-missing.bin".into(), model.clone()], ..Settings::default() };
-        let attempts = transcribe_with_fallback(&samples, &settings, &Client::new(), &LocalEngine::default());
+        let attempts = transcribe_with_fallback(&samples, &settings, &LocalEngine::default());
         let summary: Vec<(Provider, &str, bool)> = attempts.iter().map(|a| (a.provider, a.model.as_str(), a.result.is_ok())).collect();
         assert_eq!(summary, vec![(Provider::OpenAI, "gpt-4o-transcribe", false), (Provider::Local, "ggml-missing.bin", false), (Provider::Local, model.as_str(), true)]);
         println!("TRANSCRIPT: {}", attempts.last().unwrap().result.as_ref().unwrap());

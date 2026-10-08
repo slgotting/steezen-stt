@@ -545,13 +545,7 @@ impl App {
     fn fallback_settings(&mut self, ui: &mut Ui) {
         ui.separator();
         ui.label(bold("Local fallback", 14.0).color(TEXT));
-        ui.label(muted("If transcription fails or times out, these downloaded models are tried from top to bottom. Your audio never needs to be re-recorded.").small());
-        if self.draft.provider != Provider::Local {
-            ui.horizontal(|ui| {
-                ui.label("Give up on the online service after");
-                ui.add(egui::DragValue::new(&mut self.draft.cloud_timeout_secs).range(5..=600).suffix(" s"));
-            });
-        }
+        ui.label(muted("If the online service returns an error or can't be reached, these downloaded models are tried from top to bottom. A slow but working service is never cut off, so long recordings are safe.").small());
         let list = &mut self.draft.local_fallback;
         let (mut swap, mut remove) = (None, None);
         let count = list.len();
