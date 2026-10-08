@@ -107,6 +107,37 @@ pub fn download_model(name: &str, progress: &Mutex<Option<(String, u64, u64)>>) 
     std::fs::rename(&part, models_dir().join(name)).map_err(|e| e.to_string())
 }
 
+pub struct Attempt {
+    pub provider: Provider,
+    pub model: String,
+    pub ms: u64,
+    pub result: Result<String, String>,
+}
+
+fn attempts(settings: &Settings) -> Vec<Settings> {
+    let mut list = vec![settings.clone()];
+    for m in &settings.local_fallback {
+        if !list.iter().any(|s| s.provider == Provider::Local && s.local_model == *m) {
+            list.push(Settings { provider: Provider::Local, local_model: m.clone(), ..settings.clone() });
+        }
+    }
+    list
+}
+
+pub fn transcribe_with_fallback(samples: &[f32], settings: &Settings, http: &Client, local: &LocalEngine) -> Vec<Attempt> {
+    let mut out: Vec<Attempt> = Vec::new();
+    for s in attempts(settings) {
+        let started = Instant::now();
+        let result = transcribe(samples, &s, http, local);
+        let done = result.is_ok();
+        out.push(Attempt { provider: s.provider, model: s.model(s.provider).to_string(), ms: started.elapsed().as_millis() as u64, result });
+        if done {
+            break;
+        }
+    }
+    out
+}
+
 pub fn transcribe(samples: &[f32], settings: &Settings, http: &Client, local: &LocalEngine) -> Result<String, String> {
     match settings.provider {
         Provider::Local => local.transcribe(samples, settings),
@@ -135,7 +166,7 @@ fn transcribe_cloud(provider: Provider, samples: &[f32], settings: &Settings, ht
         .post(format!("{}/audio/transcriptions", info.base_url))
         .bearer_auth(key)
         .multipart(form)
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(settings.cloud_timeout_secs.max(5) as u64))
         .send()
         .map_err(|e| format!("{} request failed: {e}", info.label))?;
     let status = resp.status();
@@ -239,6 +270,19 @@ mod tests {
         let text = transcribe(&samples, &settings, &Client::new(), &LocalEngine::default()).unwrap();
         println!("TRANSCRIPT: {text}");
         assert!(text.to_lowercase().contains("cloud"));
+    }
+
+    #[test]
+    #[ignore = "needs WH_TEST_WAV and a downloaded model"]
+    fn falls_back_to_local_when_cloud_fails() {
+        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
+        let model = std::env::var("WH_TEST_MODEL").unwrap();
+        let settings = Settings { provider: Provider::OpenAI, openai_api_key: String::new(), local_fallback: vec!["ggml-missing.bin".into(), model.clone()], ..Settings::default() };
+        let attempts = transcribe_with_fallback(&samples, &settings, &Client::new(), &LocalEngine::default());
+        let summary: Vec<(Provider, &str, bool)> = attempts.iter().map(|a| (a.provider, a.model.as_str(), a.result.is_ok())).collect();
+        assert_eq!(summary, vec![(Provider::OpenAI, "gpt-4o-transcribe", false), (Provider::Local, "ggml-missing.bin", false), (Provider::Local, model.as_str(), true)]);
+        println!("TRANSCRIPT: {}", attempts.last().unwrap().result.as_ref().unwrap());
     }
 }
 

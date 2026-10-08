@@ -1,6 +1,6 @@
 use crate::corrector;
 use crate::formatter::{self, Description};
-use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState};
+use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, recordings_dir};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
 use crate::transcribe;
@@ -318,7 +318,7 @@ fn copy_button(ui: &mut Ui, shared: &Shared, label: &str, text: &str) {
         }
 }
 
-fn entry_body(ui: &mut Ui, shared: &Shared, e: &Entry) {
+fn entry_body(ui: &mut Ui, shared: &Arc<Shared>, e: &Entry) {
     ui.horizontal_wrapped(|ui| {
         ui.label(bold(e.time.format("%b %d, %H:%M").to_string(), 13.0).color(TEXT));
         ui.label(muted(format!("{} · {} · {:.1}s", e.provider.info().label, e.model, e.duration_secs)).small());
@@ -344,7 +344,20 @@ fn entry_body(ui: &mut Ui, shared: &Shared, e: &Entry) {
                 ui.add(egui::Label::new(&e.raw).selectable(true).wrap());
             });
         }
+        if let Some(name) = e.audio.as_ref().filter(|n| recordings_dir().join(n).exists()) {
+            if ui.small_button("↻ Transcribe again").on_hover_text("Run this recording through the current settings; the result goes to the clipboard").clicked() {
+                shared.retry(name);
+            }
+            if ui.small_button("Show file").on_hover_text(recordings_dir().join(name).display().to_string()).clicked() {
+                reveal(&recordings_dir());
+            }
+        }
     });
+}
+
+fn reveal(path: &std::path::Path) {
+    let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(opener).arg(path).spawn();
 }
 
 impl App {
@@ -517,6 +530,7 @@ impl App {
         if provider == Provider::Local {
             self.local_settings(ui);
         }
+        self.fallback_settings(ui);
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Language");
@@ -526,6 +540,66 @@ impl App {
         ui.label("Prompt (vocabulary and style hints passed to the model)");
         ui.add(egui::TextEdit::multiline(&mut self.draft.prompt).desired_rows(2).desired_width(f32::INFINITY));
         ui.add(egui::Slider::new(&mut self.draft.temperature, 0.0..=1.0).text("Temperature"));
+    }
+
+    fn fallback_settings(&mut self, ui: &mut Ui) {
+        ui.separator();
+        ui.label(bold("Local fallback", 14.0).color(TEXT));
+        ui.label(muted("If transcription fails or times out, these downloaded models are tried from top to bottom. Your audio never needs to be re-recorded.").small());
+        if self.draft.provider != Provider::Local {
+            ui.horizontal(|ui| {
+                ui.label("Give up on the online service after");
+                ui.add(egui::DragValue::new(&mut self.draft.cloud_timeout_secs).range(5..=600).suffix(" s"));
+            });
+        }
+        let list = &mut self.draft.local_fallback;
+        let (mut swap, mut remove) = (None, None);
+        let count = list.len();
+        for (i, m) in list.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}.", i + 1));
+                let missing = !self.installed.contains(m);
+                ui.label(if missing { RichText::new(format!("{m} (not downloaded)")).color(AMBER) } else { RichText::new(m).color(TEXT) });
+                if let Some(details) = local_model_details(m) {
+                    ui.label(muted(details).small());
+                }
+                if i > 0 && ui.small_button("▲").clicked() {
+                    swap = Some((i, i - 1));
+                }
+                if i + 1 < count && ui.small_button("▼").clicked() {
+                    swap = Some((i, i + 1));
+                }
+                if ui.small_button("🗑").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some((a, b)) = swap {
+            list.swap(a, b);
+        }
+        if let Some(i) = remove {
+            list.remove(i);
+        }
+        let mut available: Vec<&String> = self.installed.iter().filter(|m| !list.contains(m)).collect();
+        available.sort_by_key(|m| transcribe::local_model_info(m).map_or(u32::MAX, |i| i.size_mb));
+        if available.is_empty() {
+            if self.installed.is_empty() {
+                ui.label(muted("No local models downloaded yet. Pick Local above, choose a model and download it.").small());
+            }
+            return;
+        }
+        let mut added = None;
+        egui::ComboBox::from_id_salt("add-fallback").selected_text("➕ Add a fallback model").width(220.0).show_ui(ui, |ui| {
+            ui.set_min_width(520.0);
+            for m in available {
+                if ui.selectable_label(false, model_row(m, m, ui.style())).clicked() {
+                    added = Some(m.clone());
+                }
+            }
+        });
+        if let Some(m) = added {
+            list.push(m);
+        }
     }
 
     fn local_settings(&mut self, ui: &mut Ui) {
@@ -839,8 +913,16 @@ impl App {
             ui.add(egui::DragValue::new(&mut self.draft.history_limit).range(1..=100_000));
             ui.label("History entries to keep");
         });
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut self.draft.keep_recordings).range(0..=1000));
+            ui.label("Recordings to keep, whether or not they transcribed (0 = don't save audio)");
+            if ui.small_button("Open folder").clicked() {
+                let _ = std::fs::create_dir_all(recordings_dir());
+                reveal(&recordings_dir());
+            }
+        });
         ui.separator();
-        for (label, path) in [("Settings", config_dir()), ("Data (history, models)", data_dir())] {
+        for (label, path) in [("Settings", config_dir()), ("Data (history, models, recordings)", data_dir())] {
             ui.label(RichText::new(format!("{label}: {}", path.display())).color(MUTED).small());
         }
         if ui.button("Quit steezen-stt").clicked() {

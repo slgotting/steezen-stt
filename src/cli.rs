@@ -1,6 +1,6 @@
 use crate::audio::{WHISPER_RATE, read_wav, resample};
 use crate::settings::Settings;
-use crate::transcribe::{LocalEngine, transcribe as run};
+use crate::transcribe::{LocalEngine, transcribe_with_fallback};
 
 const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>]\nTranscribes a 16-bit PCM WAV with the service chosen in Settings and prints the text.";
 
@@ -34,7 +34,12 @@ pub fn transcribe(args: &[String]) -> i32 {
         .and_then(|bytes| read_wav(&bytes))
         .and_then(|(samples, rate)| {
             let http = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default();
-            run(&resample(&samples, rate, WHISPER_RATE), &settings, &http, &LocalEngine::default())
+            let mut attempts = transcribe_with_fallback(&resample(&samples, rate, WHISPER_RATE), &settings, &http, &LocalEngine::default());
+            let last = attempts.pop().map(|a| a.result).unwrap_or_else(|| Err("nothing to try".into()));
+            for a in &attempts {
+                eprintln!("{} ({}) failed: {}", a.provider.info().label, a.model, a.result.as_ref().err().map_or("", |e| e));
+            }
+            last
         });
     match result {
         Ok(text) => {

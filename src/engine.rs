@@ -84,6 +84,8 @@ pub struct Entry {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub dict_text: String,
+    #[serde(default)]
+    pub audio: Option<String>,
 }
 
 pub struct Shared {
@@ -107,6 +109,24 @@ pub struct Shared {
 
 fn history_path() -> std::path::PathBuf {
     data_dir().join("history.json")
+}
+
+pub fn recordings_dir() -> std::path::PathBuf {
+    data_dir().join("recordings")
+}
+
+fn save_recording(samples: &[f32], keep: usize) -> Option<String> {
+    if keep == 0 {
+        return None;
+    }
+    let name = format!("{}.wav", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f"));
+    write_private(&recordings_dir().join(&name), &audio::wav_bytes(samples, WHISPER_RATE)).ok()?;
+    let mut saved: Vec<_> = std::fs::read_dir(recordings_dir()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "wav")).collect();
+    saved.sort();
+    for old in &saved[..saved.len().saturating_sub(keep)] {
+        let _ = std::fs::remove_file(old);
+    }
+    Some(name)
 }
 
 impl Shared {
@@ -214,6 +234,14 @@ impl Shared {
             }
         });
     }
+
+    pub fn retry(self: &Arc<Self>, name: &str) {
+        let settings = Settings { output_cursor: false, output_clipboard: true, ..self.settings() };
+        match std::fs::read(recordings_dir().join(name)).map_err(|e| e.to_string()).and_then(|b| audio::read_wav(&b)) {
+            Ok((samples, rate)) => process(self.clone(), settings, audio::resample(&samples, rate, WHISPER_RATE), false, Some(name.to_string())),
+            Err(e) => self.set_notice(format!("Couldn't read recording {name}: {e}"), true),
+        }
+    }
 }
 
 pub fn notify(title: &str, body: &str) {
@@ -306,12 +334,15 @@ fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording, format
         shared.set_notice("Recording too short; ignored", false);
         return;
     }
+    let audio = save_recording(&samples, settings.keep_recordings);
+    process(shared.clone(), settings.clone(), samples, format, audio);
+}
+
+fn process(shared: Arc<Shared>, settings: Settings, samples: Vec<f32>, format: bool, audio: Option<String>) {
     shared.jobs.fetch_add(1, Ordering::SeqCst);
     shared.repaint();
-    let shared = shared.clone();
-    let settings = settings.clone();
     std::thread::spawn(move || {
-        let entry = pipeline(&shared, &settings, &samples, format);
+        let entry = pipeline(&shared, &settings, &samples, format, audio);
         shared.jobs.fetch_sub(1, Ordering::SeqCst);
         if let Some(entry) = entry {
             shared.history.lock().unwrap().push(entry);
@@ -321,7 +352,7 @@ fn stop(shared: &Arc<Shared>, settings: &Settings, rec: audio::Recording, format
     });
 }
 
-fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool) -> Option<Entry> {
+fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool, audio: Option<String>) -> Option<Entry> {
     let timeout = Duration::from_secs(s.script_timeout_secs.max(1) as u64);
     let mut warnings = Vec::new();
     let mut entry = Entry {
@@ -335,8 +366,8 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool) 
         error: None,
         steps: Vec::new(),
         dict_text: String::new(),
+        audio,
     };
-    let provider = s.provider.info().label;
 
     if hooks::has(&s.scripts, Stage::BeforeTranscription) {
         let path = std::env::temp_dir().join(format!("{}-{}.wav", crate::settings::APP_NAME, std::process::id()));
@@ -347,15 +378,28 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool) 
         }
     }
 
-    let started = Instant::now();
-    match transcribe::transcribe(samples, s, &shared.http, &shared.local) {
-        Ok(text) => {
-            entry.raw = text;
-            let ms = fmt_ms(started.elapsed().as_millis() as u64);
-            step(&mut entry.steps, format!("{provider} · {ms}"), format!("Transcribed by {provider} ({}) in {ms}", entry.model), StepState::Ok);
+    let attempts = transcribe::transcribe_with_fallback(samples, s, &shared.http, &shared.local);
+    for (i, a) in attempts.iter().enumerate() {
+        let label = if i == 0 { a.provider.info().label.to_string() } else { format!("Fallback {}", a.model) };
+        let ms = fmt_ms(a.ms);
+        match &a.result {
+            Ok(_) => step(&mut entry.steps, format!("{label} · {ms}"), format!("Transcribed by {} ({}) in {ms}", a.provider.info().label, a.model), StepState::Ok),
+            Err(e) => step(&mut entry.steps, format!("{label} · failed"), e.clone(), StepState::Failed),
         }
-        Err(e) => {
-            step(&mut entry.steps, format!("{provider} · failed"), e.clone(), StepState::Failed);
+    }
+    let failures: Vec<String> = attempts.iter().filter_map(|a| a.result.as_ref().err().map(|e| format!("{} ({}): {e}", a.provider.info().label, a.model))).collect();
+    let last = attempts.last().expect("at least one attempt");
+    match &last.result {
+        Ok(text) => {
+            entry.raw = text.clone();
+            entry.provider = last.provider;
+            entry.model = last.model.clone();
+            if !failures.is_empty() {
+                warnings.push(format!("Used local fallback {} after: {}", last.model, failures.join("; ")));
+            }
+        }
+        Err(_) => {
+            let e = failures.join("\n");
             shared.set_notice(&e, true);
             entry.error = Some(e);
             return Some(entry);
@@ -363,7 +407,8 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool) 
     }
     if entry.raw.is_empty() {
         shared.set_notice("No speech detected", false);
-        return None;
+        entry.error = Some("No speech detected".into());
+        return entry.audio.is_some().then_some(entry);
     }
 
     let mut text = entry.raw.clone();
