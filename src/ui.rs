@@ -507,6 +507,10 @@ impl App {
                 self.installed = transcribe::installed_local_models();
             }
         });
+        if let Some(details) = local_model_details(self.draft.model(provider)).filter(|_| provider == Provider::Local) {
+            ui.label(muted(details).small());
+            ui.label(muted("Quality and speed are relative to the other Whisper models; speed is for CPU, a GPU narrows the gap. English-only (.en) models are a little more accurate in English. Quantized (5-bit, 8-bit) models are smaller and faster with almost no loss. large-v3-turbo is the best balance; base.en suits slow machines.").small());
+        }
         if let Some(Err(e)) = self.shared.models.lock().unwrap().get(&provider) {
             ui.label(RichText::new(format!("Couldn't fetch models: {e}")).color(MUTED).small());
         }
@@ -863,19 +867,53 @@ fn provider_combo(ui: &mut Ui, provider: &mut Provider) {
 
 fn model_combo(ui: &mut Ui, shared: &Shared, s: &mut Settings, installed: &[String]) {
     let provider = s.provider;
+    let local = provider == Provider::Local;
     let fetched = shared.models.lock().unwrap().get(&provider).and_then(|r| r.as_ref().ok().cloned());
     let mut models = fetched.unwrap_or_else(|| provider.info().fallback_models.iter().map(|m| m.to_string()).collect());
-    models.extend(installed.iter().filter(|_| provider == Provider::Local).cloned());
+    models.extend(installed.iter().filter(|_| local).cloned());
     models.push(s.model(provider).to_string());
-    models.sort();
+    let is_installed = |m: &str| local && installed.iter().any(|i| i == m);
+    let size = |m: &str| transcribe::local_model_info(m).map_or(u32::MAX, |i| i.size_mb);
+    models.sort_by_key(|m| (!is_installed(m), size(m), m.clone()));
     models.dedup();
     let current = s.model_mut(provider);
-    let mark = |m: &str| if provider == Provider::Local && installed.iter().any(|i| i == m) { format!("✔ {m}") } else { m.to_string() };
-    egui::ComboBox::from_id_salt(("model", ui.id())).selected_text(mark(current)).width(220.0).height(400.0).show_ui(ui, |ui| {
+    let mark = |m: &str| if is_installed(m) { format!("✔ {m}") } else { m.to_string() };
+    let width = if local { 520.0 } else { 220.0 };
+    egui::ComboBox::from_id_salt(("model", ui.id())).selected_text(mark(current)).width(220.0).height(480.0).show_ui(ui, |ui| {
+        ui.set_min_width(width);
+        let mut header = None;
         for m in &models {
-            ui.selectable_value(current, m.clone(), mark(m));
+            if local {
+                let group = if is_installed(m) { "Downloaded" } else { "Available to download" };
+                if header != Some(group) {
+                    if header.is_some() {
+                        ui.separator();
+                    }
+                    ui.label(muted(group).small());
+                    header = Some(group);
+                }
+            }
+            ui.selectable_value(current, m.clone(), model_row(&mark(m), m, ui.style()));
         }
     });
+}
+
+fn model_row(label: &str, name: &str, style: &egui::Style) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let body = egui::TextStyle::Body.resolve(style);
+    job.append(label, 0.0, egui::TextFormat::simple(body, TEXT));
+    if let Some(details) = local_model_details(name) {
+        job.append(&details, 12.0, egui::TextFormat::simple(egui::TextStyle::Small.resolve(style), MUTED));
+    }
+    job
+}
+
+fn local_model_details(name: &str) -> Option<String> {
+    let info = transcribe::local_model_info(name)?;
+    let dots = |n: u8| (1..=5).map(|i| if i <= n { '●' } else { '○' }).collect::<String>();
+    let size = if info.size_mb >= 1000 { format!("{:.1} GB", info.size_mb as f32 / 1000.0) } else { format!("{} MB", info.size_mb) };
+    let notes = info.notes.iter().map(|n| format!(" · {n}")).collect::<String>();
+    Some(format!("quality {} speed {} · ~{size}{notes}", dots(info.quality), dots(info.speed)))
 }
 
 fn rule_editor(ui: &mut Ui, rule: &mut DictRule, i: usize, blocked: Option<&str>) -> (bool, bool) {

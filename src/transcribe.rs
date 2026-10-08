@@ -54,6 +54,37 @@ pub fn installed_local_models() -> Vec<String> {
     models
 }
 
+const LOCAL_FAMILIES: &[(&str, f32, u8, u8)] = &[
+    ("large-v3-turbo", 809.0, 5, 3),
+    ("large-v3", 1550.0, 5, 1),
+    ("large-v2", 1550.0, 5, 1),
+    ("large-v1", 1550.0, 4, 1),
+    ("large", 1550.0, 4, 1),
+    ("medium", 769.0, 4, 2),
+    ("small", 244.0, 3, 4),
+    ("base", 74.0, 2, 5),
+    ("tiny", 39.0, 1, 5),
+];
+
+const LOCAL_QUANTS: &[(&str, f32, &str)] = &[("-q5_0", 0.69, "5-bit"), ("-q5_1", 0.75, "5-bit"), ("-q8_0", 1.07, "8-bit")];
+
+const LOCAL_TAGS: &[(&str, &str)] = &[(".en", "English only"), ("-tdrz", "marks speaker turns")];
+
+pub struct LocalModelInfo {
+    pub quality: u8,
+    pub speed: u8,
+    pub size_mb: u32,
+    pub notes: Vec<&'static str>,
+}
+
+pub fn local_model_info(name: &str) -> Option<LocalModelInfo> {
+    let stem = name.strip_prefix("ggml-")?.strip_suffix(".bin")?;
+    let &(_, params, quality, speed) = LOCAL_FAMILIES.iter().find(|(f, ..)| stem.starts_with(f))?;
+    let (bytes, precision) = LOCAL_QUANTS.iter().find(|(q, ..)| stem.contains(q)).map_or((2.0, None), |&(_, b, p)| (b, Some(p)));
+    let notes = LOCAL_TAGS.iter().filter(|(t, _)| stem.contains(t)).map(|&(_, n)| n).chain(precision).collect();
+    Some(LocalModelInfo { quality, speed, size_mb: (params * bytes) as u32, notes })
+}
+
 pub fn download_model(name: &str, http: &Client, progress: &Mutex<Option<(String, u64, u64)>>) -> Result<(), String> {
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{name}");
     let mut resp = http.get(url).send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
@@ -207,5 +238,20 @@ mod tests {
         let text = transcribe(&samples, &settings, &Client::new(), &LocalEngine::default()).unwrap();
         println!("TRANSCRIPT: {text}");
         assert!(text.to_lowercase().contains("cloud"));
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::local_model_info;
+
+    #[test]
+    fn parses_local_model_names() {
+        let turbo = local_model_info("ggml-large-v3-turbo-q5_0.bin").unwrap();
+        assert_eq!((turbo.quality, turbo.speed, turbo.notes), (5, 3, vec!["5-bit"]));
+        let small = local_model_info("ggml-small.en-tdrz.bin").unwrap();
+        assert_eq!((small.quality, small.notes), (3, vec!["English only", "marks speaker turns"]));
+        assert_eq!(local_model_info("ggml-base.en.bin").unwrap().size_mb, 148);
+        assert!(local_model_info("whisper-1").is_none());
     }
 }
