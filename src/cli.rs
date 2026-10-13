@@ -1,15 +1,16 @@
 use crate::audio::{WHISPER_RATE, read_wav, resample};
-use crate::settings::Settings;
-use crate::transcribe::{LocalEngine, transcribe_with_fallback};
+use crate::settings::{Provider, Settings};
+use crate::transcribe::{LocalEngine, installed_local_models, transcribe_with_fallback};
 
-const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>]\nTranscribes a 16-bit PCM WAV with the service chosen in Settings and prints the text.";
+const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>] [--local]\nTranscribes a 16-bit PCM WAV with the service chosen in Settings and prints the text.\n--local skips the online service and uses the downloaded whisper.cpp models.";
 
 pub fn transcribe(args: &[String]) -> i32 {
-    let (mut file, mut prompt) = (None, None);
+    let (mut file, mut prompt, mut local) = (None, None, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--prompt" => prompt = it.next().cloned(),
+            "--local" => local = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return 0;
@@ -26,6 +27,15 @@ pub fn transcribe(args: &[String]) -> i32 {
         return 2;
     };
     let mut settings = Settings::load();
+    if local {
+        match local_only(&settings) {
+            Ok(s) => settings = s,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        }
+    }
     if let Some(p) = prompt.filter(|p| !p.trim().is_empty()) {
         settings.prompt = [settings.prompt.trim(), p.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
     }
@@ -50,4 +60,21 @@ pub fn transcribe(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+fn local_only(settings: &Settings) -> Result<Settings, String> {
+    let installed = installed_local_models();
+    let preferred: Vec<String> = std::iter::once(settings.local_model.clone())
+        .chain(settings.local_fallback.iter().cloned())
+        .chain(Provider::Local.info().fallback_models.iter().map(|m| m.to_string()))
+        .chain(installed.iter().cloned())
+        .filter(|m| installed.contains(m))
+        .fold(Vec::new(), |mut out, m| {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+            out
+        });
+    let (first, rest) = preferred.split_first().ok_or("No local model is downloaded. Download one in Settings → Transcription.")?;
+    Ok(Settings { provider: Provider::Local, local_model: first.clone(), local_fallback: rest.to_vec(), ..settings.clone() })
 }
