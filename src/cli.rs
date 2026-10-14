@@ -2,7 +2,7 @@ use crate::audio::{WHISPER_RATE, read_wav, resample};
 use crate::settings::{Provider, Settings};
 use crate::transcribe::{LocalEngine, installed_local_models, transcribe_with_fallback};
 
-const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>] [--local]\nTranscribes a 16-bit PCM WAV with the service chosen in Settings and prints the text.\n--local skips the online service and uses the downloaded whisper.cpp models.";
+const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>] [--local]\nTranscribes a 16-bit PCM WAV and prints the text: the service chosen in Settings first, then the other online service you have a key for, then the local whisper.cpp models (your fallback list, or the best downloaded model). The service used is printed to stderr as \"transcribed by: …\".\n--local skips the online services and uses only the downloaded whisper.cpp models.";
 
 pub fn transcribe(args: &[String]) -> i32 {
     let (mut file, mut prompt, mut local) = (None, None, false);
@@ -35,6 +35,8 @@ pub fn transcribe(args: &[String]) -> i32 {
                 return 1;
             }
         }
+    } else if settings.provider != Provider::Local && settings.local_fallback.is_empty() {
+        settings.local_fallback = local_only(&settings).map(|s| vec![s.local_model]).unwrap_or_default();
     }
     if let Some(p) = prompt.filter(|p| !p.trim().is_empty()) {
         settings.prompt = [settings.prompt.trim(), p.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
@@ -44,11 +46,15 @@ pub fn transcribe(args: &[String]) -> i32 {
         .and_then(|bytes| read_wav(&bytes))
         .and_then(|(samples, rate)| {
             let mut attempts = transcribe_with_fallback(&resample(&samples, rate, WHISPER_RATE), &settings, &LocalEngine::default());
-            let last = attempts.pop().map(|a| a.result).unwrap_or_else(|| Err("nothing to try".into()));
+            let last = attempts.pop();
             for a in &attempts {
                 eprintln!("{} ({}) failed: {}", a.provider.info().label, a.model, a.result.as_ref().err().map_or("", |e| e));
             }
-            last
+            let last = last.ok_or_else(|| "nothing to try".to_string())?;
+            if last.result.is_ok() {
+                eprintln!("transcribed by: {} ({})", last.provider.info().label, last.model);
+            }
+            last.result
         });
     match result {
         Ok(text) => {

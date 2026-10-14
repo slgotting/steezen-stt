@@ -119,6 +119,9 @@ pub struct Attempt {
 
 fn attempts(settings: &Settings) -> Vec<Settings> {
     let mut list = vec![settings.clone()];
+    for p in Provider::ALL.into_iter().filter(|p| *p != Provider::Local && *p != settings.provider && !settings.api_key(*p).is_empty()) {
+        list.push(Settings { provider: p, ..settings.clone() });
+    }
     for m in &settings.local_fallback {
         if !list.iter().any(|s| s.provider == Provider::Local && s.local_model == *m) {
             list.push(Settings { provider: Provider::Local, local_model: m.clone(), ..settings.clone() });
@@ -303,3 +306,28 @@ mod info_tests {
     }
 }
 
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn order(s: &Settings) -> Vec<String> {
+        attempts(s).iter().map(|a| format!("{:?}{}", a.provider, if a.provider == Provider::Local { format!(":{}", a.local_model) } else { String::new() })).collect()
+    }
+
+    #[test]
+    fn cloud_providers_with_keys_come_before_local() {
+        let s = Settings { provider: Provider::OpenAI, openai_api_key: "sk-x".into(), groq_api_key: "gsk-x".into(), local_fallback: vec!["ggml-small.en.bin".into()], ..Settings::default() };
+        assert_eq!(order(&s), ["OpenAI", "Groq", "Local:ggml-small.en.bin"]);
+        let g = Settings { provider: Provider::Groq, ..s.clone() };
+        assert_eq!(order(&g), ["Groq", "OpenAI", "Local:ggml-small.en.bin"]);
+    }
+
+    #[test]
+    fn a_cloud_provider_without_a_key_is_skipped() {
+        let s = Settings { provider: Provider::OpenAI, openai_api_key: "sk-x".into(), groq_api_key: String::new(), local_fallback: vec![], ..Settings::default() };
+        if std::env::var("GROQ_API_KEY").is_err() {
+            assert_eq!(order(&s), ["OpenAI"]);
+        }
+    }
+}
