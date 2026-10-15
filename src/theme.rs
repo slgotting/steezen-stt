@@ -41,6 +41,7 @@ fn widget(v: &mut egui::style::WidgetVisuals, fill: Color32, stroke: Color32, fg
 
 pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts());
+    ctx.set_theme(egui::Theme::Dark);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = BG;
     visuals.window_fill = SURFACE;
