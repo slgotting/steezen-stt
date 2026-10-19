@@ -1,6 +1,6 @@
 use crate::corrector;
 use crate::formatter::{self, Description};
-use crate::engine::{Cmd, Entry, KeyCheck, PROBE_RUNS, Phase, Shared, Step, StepState, fmt_ms, hello_path, recordings_dir};
+use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, fmt_ms, hello_path, recordings_dir};
 use crate::latency::{self, Latency};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
@@ -101,6 +101,7 @@ pub struct App {
     script_tests: Arc<Mutex<std::collections::HashMap<usize, String>>>,
     generating: Arc<Mutex<std::collections::HashMap<usize, (String, Option<Result<Description, String>>)>>>,
     hello_rec: Option<crate::audio::Recording>,
+    baseline_edit: Option<(u64, f64)>,
 }
 
 impl App {
@@ -136,6 +137,7 @@ impl App {
             test_output: Arc::default(),
             installed: transcribe::installed_local_models(),
             hello_rec: None,
+            baseline_edit: None,
             key_input: String::new(),
             script_tests: Arc::default(),
             generating: Arc::default(),
@@ -461,7 +463,7 @@ impl App {
         card(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(bold("Baseline check", 15.0).color(TEXT));
-            ui.label(muted(format!("Record a short clip saying \"hello\", then send it to {name} {PROBE_RUNS} times while the service seems healthy. Nothing changes until you choose to use the result. The baseline is the reply time for a clip of almost no audio; the rate per second and the spread are then measured only on the time above it.")).small());
+            ui.label(muted(format!("Record a short clip saying \"hello\", then send it to {name} several times while the service seems healthy. The average reply time goes into the box below, where you can adjust it before using it; nothing changes until you do. The baseline is the reply time for a clip of almost no audio; the rate per second and the spread are then measured only on the time above it.")).small());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let recording = self.hello_rec.is_some();
@@ -485,15 +487,27 @@ impl App {
                     (false, None) => "No clip yet.".to_string(),
                 }));
             });
-            let probe = self.shared.probe.lock().unwrap();
+            let mut probe = self.shared.probe.lock().unwrap();
             let online = s.provider != Provider::Local;
             let can_test = online && clip.is_some() && !probe.running && self.hello_rec.is_none();
-            let label = if probe.running { format!("Testing… {} of {PROBE_RUNS}", probe.runs.len() + 1) } else { format!("Test against {name}") };
-            let test = ui.add_enabled(can_test, egui::Button::new(label));
-            let test = if online { test } else { test.on_disabled_hover_text("Choose an online service in Settings → Transcription first.") };
-            let start = test.clicked();
+            let mut start = false;
+            ui.horizontal(|ui| {
+                ui.add_enabled(!probe.running, egui::DragValue::new(&mut self.draft.probe_runs).range(1..=100).suffix(" requests"));
+                ui.label(muted("every"));
+                ui.add_enabled(!probe.running, egui::DragValue::new(&mut self.draft.probe_gap_secs).range(0.0..=120.0).speed(0.1).fixed_decimals(1).suffix(" s"));
+                if probe.running {
+                    ui.label(muted(format!("Testing… {} of {}", probe.runs.len(), probe.total)));
+                    if ui.button("Stop").clicked() {
+                        probe.stop = true;
+                    }
+                } else {
+                    let test = ui.add_enabled(can_test, egui::Button::new(format!("Test against {name}")));
+                    let test = if online { test } else { test.on_disabled_hover_text("Choose an online service in Settings → Transcription first.") };
+                    start = test.clicked();
+                }
+            });
             if !probe.runs.is_empty() {
-                egui::Grid::new("probe").num_columns(4).spacing([16.0, 4.0]).striped(true).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("probe-runs").max_height(220.0).show(ui, |ui| egui::Grid::new("probe").num_columns(4).spacing([16.0, 4.0]).striped(true).show(ui, |ui| {
                     for h in ["Run", "Upload", "Reply", "Heard"] {
                         ui.label(muted(h).small());
                     }
@@ -508,14 +522,23 @@ impl App {
                         };
                         ui.end_row();
                     }
-                });
+                }));
             }
             let mut set = None;
-            if let (false, Some(ms)) = (probe.running, probe.median_wait()) {
-                let target = probe.key.replacen(':', " · ", 1);
-                if ui.button(format!("Use {} as the baseline for {target}", fmt_ms(ms))).on_hover_text("The middle of the reply times above. Only use it if they look normal for a healthy service.").clicked() {
-                    set = Some((probe.key.clone(), Some(ms as f64)));
+            if let (false, Some(sum)) = (probe.running, probe.summary()) {
+                ui.label(muted(format!("{} good replies: average {}, spread ± {}, fastest {}, slowest {}.", sum.count, fmt_ms(sum.mean as u64), fmt_ms(sum.sd as u64), fmt_ms(sum.min), fmt_ms(sum.max))));
+                if self.baseline_edit.is_none_or(|(id, _)| id != probe.id) {
+                    self.baseline_edit = Some((probe.id, sum.mean.round()));
                 }
+                let target = probe.key.replacen(':', " · ", 1);
+                ui.horizontal(|ui| {
+                    if let Some((_, ms)) = &mut self.baseline_edit {
+                        ui.add(egui::DragValue::new(ms).range(0.0..=60_000.0).speed(5.0).suffix(" ms")).on_hover_text("Starts at the average. Lower it if a few slow replies pulled it up.");
+                        if ui.button(format!("Use as the baseline for {target}")).clicked() {
+                            set = Some((probe.key.clone(), Some(*ms)));
+                        }
+                    }
+                });
             }
             drop(probe);
             let current = self.shared.latency.baseline(&key);
@@ -539,7 +562,7 @@ impl App {
                 }
             }
             if start {
-                self.shared.test_baseline();
+                self.shared.test_baseline(self.draft.probe_runs, Duration::from_secs_f32(self.draft.probe_gap_secs));
             }
         });
         if self.hello_rec.is_some() {

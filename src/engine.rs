@@ -89,20 +89,31 @@ pub struct Entry {
     pub audio: Option<String>,
 }
 
-pub const PROBE_RUNS: usize = 3;
-
 #[derive(Default)]
 pub struct Probe {
+    pub id: u64,
     pub running: bool,
+    pub stop: bool,
+    pub total: u32,
     pub key: String,
     pub runs: Vec<(Result<String, String>, Option<transcribe::Timing>)>,
 }
 
+pub struct ProbeSummary {
+    pub count: usize,
+    pub mean: f64,
+    pub sd: f64,
+    pub min: u64,
+    pub max: u64,
+}
+
 impl Probe {
-    pub fn median_wait(&self) -> Option<u64> {
-        let mut waits: Vec<u64> = self.runs.iter().filter(|(r, _)| r.is_ok()).filter_map(|(_, t)| t.map(|t| t.wait_ms)).collect();
-        waits.sort();
-        waits.get(waits.len() / 2).copied()
+    pub fn summary(&self) -> Option<ProbeSummary> {
+        let waits: Vec<u64> = self.runs.iter().filter(|(r, _)| r.is_ok()).filter_map(|(_, t)| t.map(|t| t.wait_ms)).collect();
+        let n = waits.len() as f64;
+        let mean = waits.iter().sum::<u64>() as f64 / n;
+        let sd = (waits.iter().map(|&w| (w as f64 - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0)).sqrt();
+        Some(ProbeSummary { count: waits.len(), mean, sd, min: *waits.iter().min()?, max: *waits.iter().max()? })
     }
 }
 
@@ -261,16 +272,26 @@ impl Shared {
         });
     }
 
-    pub fn test_baseline(self: &Arc<Self>) {
+    pub fn test_baseline(self: &Arc<Self>, runs: u32, gap: Duration) {
         let settings = self.settings();
         let samples = match std::fs::read(hello_path()).map_err(|e| e.to_string()).and_then(|b| audio::read_wav(&b)) {
             Ok((samples, rate)) => audio::resample(&samples, rate, WHISPER_RATE),
             Err(e) => return self.set_notice(format!("Couldn't read the hello clip: {e}"), true),
         };
-        *self.probe.lock().unwrap() = Probe { running: true, key: crate::latency::key(settings.provider, settings.model(settings.provider)), runs: Vec::new() };
+        let id = self.probe.lock().unwrap().id + 1;
+        *self.probe.lock().unwrap() = Probe { id, running: true, stop: false, total: runs, key: crate::latency::key(settings.provider, settings.model(settings.provider)), runs: Vec::new() };
         let shared = self.clone();
         std::thread::spawn(move || {
-            for _ in 0..PROBE_RUNS {
+            for i in 0..runs {
+                if i > 0 {
+                    let until = Instant::now() + gap;
+                    while Instant::now() < until && !shared.probe.lock().unwrap().stop {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+                if shared.probe.lock().unwrap().stop {
+                    break;
+                }
                 let run = transcribe::timed_cloud(&samples, &settings);
                 shared.probe.lock().unwrap().runs.push(run);
                 shared.repaint();
@@ -648,4 +669,20 @@ fn transcribe_and_deliver(shared: &Arc<Shared>, s: &Settings, samples: &[f32], f
         }
     }
     Some(entry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transcribe::Timing;
+
+    #[test]
+    fn probe_summary_averages_only_good_replies() {
+        let run = |ok: bool, wait_ms: u64| (if ok { Ok("hello".to_string()) } else { Err("down".to_string()) }, Some(Timing { send_ms: 100, wait_ms }));
+        let probe = Probe { runs: vec![run(true, 500), run(true, 1000), run(false, 9000), run(true, 1500)], ..Probe::default() };
+        let s = probe.summary().unwrap();
+        assert_eq!((s.count, s.mean, s.min, s.max), (3, 1000.0, 500, 1500));
+        assert!((s.sd - 500.0).abs() < 1e-9);
+        assert!(Probe { runs: vec![run(false, 1)], ..Probe::default() }.summary().is_none());
+    }
 }

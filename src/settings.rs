@@ -208,6 +208,8 @@ pub struct Settings {
     pub notify_complete: bool,
     pub notify_error: bool,
     pub notify_fallback: bool,
+    pub probe_runs: u32,
+    pub probe_gap_secs: f32,
 
     pub corrector_enabled: bool,
     pub corrector_model: String,
@@ -263,6 +265,8 @@ impl Default for Settings {
             notify_complete: false,
             notify_error: false,
             notify_fallback: true,
+            probe_runs: 10,
+            probe_gap_secs: 2.0,
             corrector_enabled: true,
             corrector_model: "jev-latest".into(),
             jev_reminder: JevReminder::default(),
