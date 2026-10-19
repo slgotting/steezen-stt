@@ -18,6 +18,7 @@ const GENERATING: &str = "Generating…";
 enum Page {
     Home,
     History,
+    Stats,
     Settings,
 }
 
@@ -34,7 +35,7 @@ enum Section {
     General,
 }
 
-const PAGES: [(Page, &str); 3] = [(Page::Home, "Home"), (Page::History, "History"), (Page::Settings, "Settings")];
+const PAGES: [(Page, &str); 4] = [(Page::Home, "Home"), (Page::History, "History"), (Page::Stats, "Stats"), (Page::Settings, "Settings")];
 
 const SECTIONS: [(Section, &str, &str); 9] = [
     (Section::Transcription, "Transcription", "Where your audio goes and which model turns it into text."),
@@ -294,6 +295,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(PADDING)).show(ui, |ui| match self.page {
             Page::Home => self.home(ui),
             Page::History => self.history(ui),
+            Page::Stats => stats_page(ui, &self.shared.latency),
             Page::Settings => self.settings(ui),
         });
         let ctx = ui.ctx().clone();
@@ -926,6 +928,80 @@ impl App {
             tray::quit(&self.shared);
         }
     }
+}
+
+const STATS_INTRO: &str = "Only online replies that succeeded are counted. Reply time is the wait after the upload finishes. It is modelled as a fixed overhead (what even a one-word clip costs) plus a rate for each second of audio, fitted to every dictation with newer ones counting more. The spread is measured around that line, so the overhead is not part of it.";
+
+fn stat_rows(b: &latency::Baseline) -> Vec<(&'static str, String, &'static str)> {
+    let t = b.totals;
+    let avg = |sum: f64| if t.count == 0 { "–".to_string() } else { fmt_ms((sum / t.count as f64) as u64) };
+    let fit = b.fit();
+    let per = |ms: f64| format!("{ms:.0} ms per audio second");
+    vec![
+        ("Replies measured", format!("{} (model learned from {})", t.count, b.samples), "Totals start when tracking began; the model also counts replies from before the totals existed."),
+        ("Average audio length", if t.count == 0 { "–".into() } else { format!("{:.1} s", t.secs / t.count as f64) }, ""),
+        ("Average upload time", avg(t.send_ms), "From starting the request until the last byte of audio is handed to the network."),
+        ("Average reply time", avg(t.wait_ms), "From the end of the upload until the transcript arrives."),
+        ("Average total time", avg(t.send_ms + t.wait_ms), ""),
+        ("Reply time per audio second, overall", if t.secs > 0.0 { per(t.wait_ms / t.secs) } else { "–".into() }, "Total reply time divided by total audio. Short clips inflate this because the fixed overhead is included."),
+        ("Fixed overhead (baseline)", fit.map_or("–".into(), |(base, _)| fmt_ms(base.max(0.0) as u64)), "The reply time the line predicts for a clip of zero length."),
+        ("Reply time per audio second, above the baseline", fit.map_or("–".into(), |(_, rate)| per(rate)), "The slope of the line: what each extra second of audio adds."),
+        ("Spread above expected (1 SD)", if b.samples > 1 { fmt_ms(b.sd_ms() as u64) } else { "–".into() }, "How far replies usually land from the line; larger slowdowns are capped so one bad reply can't skew it."),
+        ("Local starts after (10 s / 60 s clip)", match (b.threshold_ms(10.0), b.threshold_ms(60.0)) {
+            (Some(a), Some(c)) => format!("{} / {}", fmt_ms(a as u64), fmt_ms(c as u64)),
+            _ => format!("not yet: {} of {} replies seen", b.samples, latency::MIN_SAMPLES),
+        }, "Expected reply time plus one standard deviation, never under 1.5 s."),
+    ]
+}
+
+fn stats_page(ui: &mut Ui, latency: &Latency) {
+    ui.label(bold("Stats", 20.0).color(TEXT));
+    ui.label(muted(STATS_INTRO).small());
+    ui.add_space(6.0);
+    let all = latency.all();
+    if all.is_empty() {
+        ui.label(muted("Nothing measured yet. Stats appear after your first online transcription."));
+        return;
+    }
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        for (key, b) in &all {
+            card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(bold(key.replacen(':', " · ", 1), 15.0).color(TEXT));
+                egui::Grid::new(("stats", key)).num_columns(2).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
+                    for (label, value, help) in stat_rows(b) {
+                        let r = ui.label(muted(label));
+                        if !help.is_empty() {
+                            r.on_hover_text(help);
+                        }
+                        ui.label(RichText::new(value).color(TEXT));
+                        ui.end_row();
+                    }
+                });
+                if b.recent.is_empty() {
+                    return;
+                }
+                ui.add_space(6.0);
+                ui.label(bold("Recent replies", 13.0).color(TEXT));
+                egui::Grid::new(("recent", key)).num_columns(6).spacing([16.0, 4.0]).striped(true).show(ui, |ui| {
+                    for h in ["When", "Audio", "Upload", "Reply", "Expected", ""] {
+                        ui.label(muted(h).small());
+                    }
+                    ui.end_row();
+                    for s in b.recent.iter().rev() {
+                        ui.label(s.time.format("%b %d, %H:%M").to_string());
+                        ui.label(format!("{:.1} s", s.secs));
+                        ui.label(fmt_ms(s.send_ms));
+                        ui.label(fmt_ms(s.wait_ms));
+                        ui.label(s.expected_ms.map_or("–".into(), |e| fmt_ms(e as u64)));
+                        ui.label(if s.slow { RichText::new("slow").color(AMBER) } else { RichText::new("") });
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.add_space(8.0);
+        }
+    });
 }
 
 fn latency_summary(ui: &mut Ui, latency: &Latency) {

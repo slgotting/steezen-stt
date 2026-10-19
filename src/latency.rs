@@ -11,8 +11,27 @@ pub const MIN_THRESHOLD_MS: f64 = 1500.0;
 const DECAY: f64 = 0.95;
 const OUTLIER_SDS: f64 = 3.0;
 const PRIOR_WEIGHT: f64 = 25.0;
+const RECENT: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Totals {
+    pub count: u32,
+    pub secs: f64,
+    pub send_ms: f64,
+    pub wait_ms: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sample {
+    pub time: chrono::DateTime<chrono::Local>,
+    pub secs: f64,
+    pub send_ms: u64,
+    pub wait_ms: u64,
+    pub expected_ms: Option<f64>,
+    pub slow: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub samples: u32,
     w: f64,
@@ -21,10 +40,14 @@ pub struct Baseline {
     sxx: f64,
     sxy: f64,
     var: f64,
+    #[serde(default)]
+    pub totals: Totals,
+    #[serde(default)]
+    pub recent: Vec<Sample>,
 }
 
 impl Baseline {
-    pub fn expected_ms(&self, secs: f64) -> Option<f64> {
+    pub fn fit(&self) -> Option<(f64, f64)> {
         if self.w <= 0.0 {
             return None;
         }
@@ -33,7 +56,11 @@ impl Baseline {
         let sxy_c = self.sxy - self.w * mx * my;
         let prior = if mx > 0.0 { my / mx } else { 0.0 };
         let slope = ((sxy_c + PRIOR_WEIGHT * prior) / (sxx_c + PRIOR_WEIGHT)).max(0.0);
-        Some((my + slope * (secs - mx)).max(0.0))
+        Some((my - slope * mx, slope))
+    }
+
+    pub fn expected_ms(&self, secs: f64) -> Option<f64> {
+        self.fit().map(|(base, rate)| (base + rate * secs).max(0.0))
     }
 
     pub fn sd_ms(&self) -> f64 {
@@ -97,11 +124,11 @@ impl Latency {
     }
 
     pub fn baseline(&self, key: &str) -> Baseline {
-        self.baselines.lock().unwrap().get(key).copied().unwrap_or_default()
+        self.baselines.lock().unwrap().get(key).cloned().unwrap_or_default()
     }
 
     pub fn all(&self) -> Vec<(String, Baseline)> {
-        let mut all: Vec<_> = self.baselines.lock().unwrap().iter().map(|(k, b)| (k.clone(), *b)).collect();
+        let mut all: Vec<_> = self.baselines.lock().unwrap().iter().map(|(k, b)| (k.clone(), b.clone())).collect();
         all.sort_by(|a, b| a.0.cmp(&b.0));
         all
     }
@@ -110,11 +137,17 @@ impl Latency {
         self.baseline(key).threshold_ms(secs).map(|ms| Duration::from_millis(ms as u64))
     }
 
-    pub fn record(&self, key: &str, secs: f64, wait_ms: u64) -> Recorded {
+    pub fn record(&self, key: &str, secs: f64, send_ms: u64, wait_ms: u64) -> Recorded {
         let mut map = self.baselines.lock().unwrap();
         let b = map.entry(key.to_string()).or_default();
         let slow = b.threshold_ms(secs).is_some_and(|t| wait_ms as f64 > t);
+        let expected_ms = b.expected_ms(secs);
         b.record(secs, wait_ms as f64);
+        let t = &mut b.totals;
+        (t.count, t.secs, t.send_ms, t.wait_ms) = (t.count + 1, t.secs + secs, t.send_ms + send_ms as f64, t.wait_ms + wait_ms as f64);
+        b.recent.push(Sample { time: chrono::Local::now(), secs, send_ms, wait_ms, expected_ms, slow });
+        let excess = b.recent.len().saturating_sub(RECENT);
+        b.recent.drain(..excess);
         if let Some(path) = &self.path
             && let Ok(bytes) = serde_json::to_vec_pretty(&*map) {
                 let _ = write_private(path, &bytes);
@@ -190,21 +223,46 @@ mod tests {
     #[test]
     fn baselines_survive_a_restart() {
         let b = trained(&[(5.0, 800.0), (6.0, 900.0)]);
-        let json = serde_json::to_string(&HashMap::from([("OpenAI:m".to_string(), b)])).unwrap();
+        let json = serde_json::to_string(&HashMap::from([("OpenAI:m".to_string(), b.clone())])).unwrap();
         let back: HashMap<String, Baseline> = serde_json::from_str(&json).unwrap();
         assert_eq!(back["OpenAI:m"], b);
+        let old: Baseline = serde_json::from_str(r#"{"samples":1,"w":1.0,"sx":5.0,"sy":900.0,"sxx":25.0,"sxy":4500.0,"var":0.0}"#).unwrap();
+        assert_eq!((old.samples, old.totals.count), (1, 0));
+    }
+
+    #[test]
+    fn fit_separates_fixed_overhead_from_per_second_rate() {
+        let pts: Vec<(f64, f64)> = (0..40).map(|i| {
+            let x = [2.0, 8.0, 20.0, 45.0][i % 4];
+            (x, 900.0 + 30.0 * x)
+        }).collect();
+        let (base, rate) = trained(&pts).fit().unwrap();
+        assert!((base - 900.0).abs() < 60.0 && (rate - 30.0).abs() < 3.0, "{base} {rate}");
+    }
+
+    #[test]
+    fn totals_and_recent_samples_are_kept() {
+        let l = Latency::in_memory();
+        for i in 0..25u64 {
+            l.record("k", 4.0, 100 + i, 1000);
+        }
+        let b = l.baseline("k");
+        assert_eq!(b.totals.count, 25);
+        assert_eq!(b.recent.len(), 20);
+        assert_eq!(b.recent.last().unwrap().send_ms, 124);
+        assert!((b.totals.secs - 100.0).abs() < 1e-9);
     }
 
     #[test]
     fn recovery_is_reported_once_after_degradation() {
         let l = Latency::in_memory();
         for i in 0..10 {
-            l.record("k", 5.0, 1000 + i * 10);
+            l.record("k", 5.0, 50, 1000 + i * 10);
         }
         assert!(l.mark_degraded());
         assert!(!l.mark_degraded());
-        assert!(matches!(l.record("k", 5.0, 30_000), Recorded::Slow));
-        assert!(matches!(l.record("k", 5.0, 1000), Recorded::Recovered));
-        assert!(matches!(l.record("k", 5.0, 1000), Recorded::Normal));
+        assert!(matches!(l.record("k", 5.0, 50, 30_000), Recorded::Slow));
+        assert!(matches!(l.record("k", 5.0, 50, 1000), Recorded::Recovered));
+        assert!(matches!(l.record("k", 5.0, 50, 1000), Recorded::Normal));
     }
 }

@@ -237,7 +237,7 @@ fn spawn_lane(plan: Vec<Settings>, runner: Runner, cancel: Arc<AtomicBool>, tx: 
             }
             let a = runner(&s, &signal);
             if let (Some((latency, secs, notify)), Ok(_), Some(t)) = (&record, &a.result, a.timing)
-                && let Recorded::Recovered = latency.record(&latency::key(a.provider, &a.model), *secs, t.wait_ms) {
+                && let Recorded::Recovered = latency.record(&latency::key(a.provider, &a.model), *secs, t.send_ms, t.wait_ms) {
                     notify(Notice::Recovered);
                 }
             let ok = a.result.is_ok();
@@ -617,7 +617,7 @@ mod race_tests {
 
     fn trained(f: &Fake, samples: u32) {
         for i in 0..samples {
-            f.latency.record(&latency::key(Provider::OpenAI, "gpt-4o-transcribe"), 5.0, 300 + (i as u64 % 3) * 10);
+            f.latency.record(&latency::key(Provider::OpenAI, "gpt-4o-transcribe"), 5.0, 20, 300 + (i as u64 % 3) * 10);
         }
     }
 
@@ -738,7 +738,7 @@ mod race_tests {
         let key = latency::key(Provider::OpenAI, "gpt-4o-transcribe");
         for i in 0..20u64 {
             let secs = [5.0, 20.0, 60.0][i as usize % 3];
-            f.latency.record(&key, secs, 300 + secs as u64 * 40 + (i % 2) * 20);
+            f.latency.record(&key, secs, 20, 300 + secs as u64 * 40 + (i % 2) * 20);
         }
         let short = f.latency.threshold(&key, 5.0).unwrap();
         let long = f.latency.threshold(&key, 60.0).unwrap();
