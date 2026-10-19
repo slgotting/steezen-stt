@@ -4,7 +4,8 @@ use crate::formatter;
 use crate::hooks;
 use crate::output::Output;
 use crate::settings::{Provider, Settings, Stage, cache_dir, data_dir, write_private};
-use crate::transcribe::{self, LocalEngine};
+use crate::latency::Latency;
+use crate::transcribe::{self, Attempt, LocalEngine, Msg, Notice, Trigger};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -98,7 +99,8 @@ pub struct Shared {
     pub download: Mutex<Option<(String, u64, u64)>>,
     pub ctx: OnceLock<eframe::egui::Context>,
     pub http: reqwest::blocking::Client,
-    pub local: LocalEngine,
+    pub local: Arc<LocalEngine>,
+    pub latency: Arc<Latency>,
     pub output: Output,
     pub cache: corrector::Cache,
     pub cmd: Mutex<Option<Sender<Cmd>>>,
@@ -142,7 +144,8 @@ impl Shared {
             download: Mutex::new(None),
             ctx: OnceLock::new(),
             http: reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(10)).build().unwrap_or_default(),
-            local: LocalEngine::default(),
+            local: Arc::new(LocalEngine::default()),
+            latency: Arc::new(Latency::load()),
             output: Output::new(),
             cache: corrector::Cache::load(cache_dir().join("corrector-cache.json")),
             cmd: Mutex::new(None),
@@ -342,17 +345,77 @@ fn process(shared: Arc<Shared>, settings: Settings, samples: Vec<f32>, format: b
     shared.jobs.fetch_add(1, Ordering::SeqCst);
     shared.repaint();
     std::thread::spawn(move || {
-        let entry = pipeline(&shared, &settings, &samples, format, audio);
+        let (entry, late) = pipeline(&shared, &settings, &samples, format, audio);
         shared.jobs.fetch_sub(1, Ordering::SeqCst);
+        let time = entry.as_ref().map(|e| e.time);
         if let Some(entry) = entry {
             shared.history.lock().unwrap().push(entry);
             shared.save_history();
         }
         shared.repaint();
+        for a in late.into_iter().flat_map(|rx| rx.into_iter()).filter_map(|m| match m {
+            Msg::Done(a) if a.provider != Provider::Local => Some(a),
+            _ => None,
+        }) {
+            let mut history = shared.history.lock().unwrap();
+            if let Some(e) = history.iter_mut().rev().find(|e| Some(e.time) == time)
+                && let Some(st) = e.steps.iter_mut().find(|st| st.label == waiting_label(&a.provider.info().label)) {
+                    *st = attempt_step(&a, " · lost", "its reply arrived after another result won, so it was discarded");
+                    if st.state == StepState::Ok {
+                        st.state = StepState::Skipped;
+                    }
+                }
+            drop(history);
+            shared.save_history();
+            shared.repaint();
+        }
     });
 }
 
-fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool, audio: Option<String>) -> Option<Entry> {
+fn waiting_label(name: &str) -> String {
+    format!("{name} · still waiting")
+}
+
+fn timing_text(a: &Attempt) -> (String, String) {
+    match a.timing {
+        Some(t) => (format!("send {} · reply {}", fmt_ms(t.send_ms), fmt_ms(t.wait_ms)), format!("sent in {}, reply after {}", fmt_ms(t.send_ms), fmt_ms(t.wait_ms))),
+        None => (fmt_ms(a.ms), format!("in {}", fmt_ms(a.ms))),
+    }
+}
+
+fn attempt_step(a: &Attempt, suffix: &str, outcome: &str) -> Step {
+    let name = match a.provider {
+        Provider::Local => format!("Local {}", a.model.trim_start_matches("ggml-").trim_end_matches(".bin")),
+        p => p.info().label.to_string(),
+    };
+    let (short, long) = timing_text(a);
+    match &a.result {
+        Ok(_) => Step { label: format!("{name} · {short}{suffix}"), detail: format!("{} ({}) {long}; {outcome}", a.provider.info().label, a.model), state: StepState::Ok },
+        Err(e) => Step { label: format!("{name} · failed"), detail: e.clone(), state: StepState::Failed },
+    }
+}
+
+fn fallback_notifier(shared: &Arc<Shared>) -> transcribe::Notify {
+    let shared = shared.clone();
+    Arc::new(move |n: Notice| {
+        if !shared.settings.read().unwrap().notify_fallback {
+            return;
+        }
+        if matches!(n, Notice::LocalStarted(_)) {
+            audio::play(Sound::Warning);
+        }
+        let (title, body) = n.text();
+        notify(title, body);
+    })
+}
+
+fn pipeline(shared: &Arc<Shared>, s: &Settings, samples: &[f32], force_format: bool, audio: Option<String>) -> (Option<Entry>, Option<std::sync::mpsc::Receiver<Msg>>) {
+    let mut late = None;
+    let entry = transcribe_and_deliver(shared, s, samples, force_format, audio, &mut late);
+    (entry, late)
+}
+
+fn transcribe_and_deliver(shared: &Arc<Shared>, s: &Settings, samples: &[f32], force_format: bool, audio: Option<String>, late: &mut Option<std::sync::mpsc::Receiver<Msg>>) -> Option<Entry> {
     let timeout = Duration::from_secs(s.script_timeout_secs.max(1) as u64);
     let mut warnings = Vec::new();
     let mut entry = Entry {
@@ -378,28 +441,44 @@ fn pipeline(shared: &Shared, s: &Settings, samples: &[f32], force_format: bool, 
         }
     }
 
-    let attempts = transcribe::transcribe_with_fallback(samples, s, &shared.local);
-    for (i, a) in attempts.iter().enumerate() {
-        let label = if i == 0 { a.provider.info().label.to_string() } else { format!("Fallback {}", a.model) };
-        let ms = fmt_ms(a.ms);
-        match &a.result {
-            Ok(_) => step(&mut entry.steps, format!("{label} · {ms}"), format!("Transcribed by {} ({}) in {ms}", a.provider.info().label, a.model), StepState::Ok),
-            Err(e) => step(&mut entry.steps, format!("{label} · failed"), e.clone(), StepState::Failed),
+    let secs = entry.duration_secs as f64;
+    let (remote, local) = transcribe::plan(s);
+    let primary = remote.first().map(|p| (p.provider.info().label, p.model(p.provider).to_string()));
+    let race = transcribe::race(remote, local, secs, transcribe::real_runner(samples.into(), shared.local.clone()), shared.latency.clone(), fallback_notifier(shared));
+    let mut started_step = race.local_started.map(|(trigger, at)| {
+        let (label, primary) = primary.clone().unwrap_or_default();
+        let detail = match (trigger, race.threshold) {
+            (Trigger::Slow, Some(t)) => format!("{label} ({primary}) had not replied {} after the upload finished; for {secs:.1} s of audio it usually replies within {} (expected time plus one standard deviation), so local transcription started alongside it.", fmt_ms(t.as_millis() as u64), fmt_ms(t.as_millis() as u64)),
+            _ => format!("{label} ({primary}) failed, so local transcription started at once."),
+        };
+        Step { label: format!("Local started · {}", fmt_ms(at)), detail, state: StepState::Skipped }
+    });
+    for (i, a) in race.attempts.iter().enumerate() {
+        if a.provider == Provider::Local && let Some(st) = started_step.take() {
+            entry.steps.push(st);
         }
+        let outcome = if Some(i) == race.winner { "this result was used" } else { "not used" };
+        entry.steps.push(attempt_step(a, "", outcome));
     }
-    let failures: Vec<String> = attempts.iter().filter_map(|a| a.result.as_ref().err().map(|e| format!("{} ({}): {e}", a.provider.info().label, a.model))).collect();
-    let last = attempts.last().expect("at least one attempt");
-    match &last.result {
-        Ok(text) => {
-            entry.raw = text.clone();
-            entry.provider = last.provider;
-            entry.model = last.model.clone();
+    entry.steps.extend(started_step);
+    for name in &race.pending {
+        let detail = format!("{name} was still working when another result won; its result will be discarded.");
+        let name = if name == "Local" { name.clone() } else { name.split(" (").next().unwrap_or(name).to_string() };
+        step(&mut entry.steps, waiting_label(&name), detail, StepState::Skipped);
+    }
+    let failures: Vec<String> = race.attempts.iter().filter_map(|a| a.result.as_ref().err().filter(|e| !e.contains("cancelled")).map(|e| format!("{} ({}): {e}", a.provider.info().label, a.model))).collect();
+    *late = Some(race.late);
+    match race.winner.map(|i| &race.attempts[i]) {
+        Some(win) => {
+            entry.raw = win.result.clone().unwrap_or_default();
+            entry.provider = win.provider;
+            entry.model = win.model.clone();
             if !failures.is_empty() {
-                warnings.push(format!("Used local fallback {} after: {}", last.model, failures.join("; ")));
+                warnings.push(format!("Used {} ({}) after: {}", win.provider.info().label, win.model, failures.join("; ")));
             }
         }
-        Err(_) => {
-            let e = failures.join("\n");
+        None => {
+            let e = if failures.is_empty() { "No transcription attempt could run".to_string() } else { failures.join("\n") };
             shared.set_notice(&e, true);
             entry.error = Some(e);
             return Some(entry);

@@ -139,6 +139,7 @@ pub enum Sound {
     Stop,
     Cancel,
     Complete,
+    Warning,
 }
 
 impl Sound {
@@ -148,6 +149,7 @@ impl Sound {
             Sound::Stop => &[880.0, 660.0],
             Sound::Cancel => &[440.0, 330.0],
             Sound::Complete => &[660.0, 880.0, 1100.0],
+            Sound::Warning => &[523.0, 392.0],
         }
     }
 }

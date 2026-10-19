@@ -1,6 +1,7 @@
 use crate::corrector;
 use crate::formatter::{self, Description};
-use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, recordings_dir};
+use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, fmt_ms, recordings_dir};
+use crate::latency::{self, Latency};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
 use crate::transcribe;
@@ -43,7 +44,7 @@ const SECTIONS: [(Section, &str, &str); 9] = [
     (Section::Dictionary, "Dictionary", "Built-in corrector for words speech-to-text often gets wrong. Jev classifies each occurrence in context and the app replaces it only above the threshold. It runs on every transcript, before your scripts. No LLM rewrites your text."),
     (Section::Formatting, "AI formatting", "Turns a rambling dictation into tidy Markdown with a cheap OpenAI model. It runs after the dictionary and before your scripts, only when you ask for it."),
     (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → AI formatting (when asked) → your text filters, top to bottom → output → after-delivery scripts."),
-    (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything is off by default."),
+    (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything except the local takeover warning is off by default."),
     (Section::General, "General", "Window, tray and history."),
 ];
 
@@ -60,13 +61,14 @@ const FORMAT_TOGGLES: [Toggle; 2] = [
     ("Format every transcript", "Clean up every transcript, with no hotkey or spoken request needed.", |s| &mut s.format_always),
 ];
 
-const FEEDBACK_TOGGLES: [Toggle; 6] = [
+const FEEDBACK_TOGGLES: [Toggle; 7] = [
     ("Sound when recording starts", "", |s| &mut s.sound_start),
     ("Sound when recording stops", "", |s| &mut s.sound_stop),
     ("Sound when recording is cancelled", "", |s| &mut s.sound_cancel),
     ("Sound when transcription completes", "", |s| &mut s.sound_complete),
     ("Notification when transcription completes", "", |s| &mut s.notify_complete),
     ("Notification on errors", "", |s| &mut s.notify_error),
+    ("Sound and notification when local transcription takes over", "A soft warning when the online service is unusually slow or failing and a local model starts, and a notification once it is back to normal.", |s| &mut s.notify_fallback),
 ];
 
 type Field = fn(&mut Settings) -> &mut String;
@@ -545,7 +547,8 @@ impl App {
     fn fallback_settings(&mut self, ui: &mut Ui) {
         ui.separator();
         ui.label(bold("Local fallback", 14.0).color(TEXT));
-        ui.label(muted("If the online service returns an error or can't be reached, these downloaded models are tried from top to bottom. A slow but working service is never cut off, so long recordings are safe.").small());
+        ui.label(muted("If the online service fails, these downloaded models are tried from top to bottom at once. If it is unusually slow for the length of the clip (more than one standard deviation over its usual reply time), a local model starts alongside it and whichever finishes first is used; the online request is never cut off. With an empty list the best downloaded model is used.").small());
+        latency_summary(ui, &self.shared.latency);
         let list = &mut self.draft.local_fallback;
         let (mut swap, mut remove) = (None, None);
         let count = list.len();
@@ -922,6 +925,17 @@ impl App {
         if ui.button("Quit steezen-stt").clicked() {
             tray::quit(&self.shared);
         }
+    }
+}
+
+fn latency_summary(ui: &mut Ui, latency: &Latency) {
+    for (key, b) in latency.all() {
+        let name = key.replacen(':', " ", 1);
+        let line = match (b.expected_ms(10.0), b.threshold_ms(10.0)) {
+            (Some(e), Some(t)) => format!("{name}: replies in about {} for 10 s of audio (± {}); local starts after {}. Learned from {} replies.", fmt_ms(e as u64), fmt_ms(b.sd_ms() as u64), fmt_ms(t as u64), b.samples),
+            _ => format!("{name}: still learning its usual speed ({} of {} replies); until then local starts only if it fails.", b.samples, latency::MIN_SAMPLES),
+        };
+        ui.label(muted(line).small());
     }
 }
 

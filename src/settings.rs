@@ -207,6 +207,7 @@ pub struct Settings {
     pub sound_complete: bool,
     pub notify_complete: bool,
     pub notify_error: bool,
+    pub notify_fallback: bool,
 
     pub corrector_enabled: bool,
     pub corrector_model: String,
@@ -261,6 +262,7 @@ impl Default for Settings {
             sound_complete: false,
             notify_complete: false,
             notify_error: false,
+            notify_fallback: true,
             corrector_enabled: true,
             corrector_model: "jev-latest".into(),
             jev_reminder: JevReminder::default(),

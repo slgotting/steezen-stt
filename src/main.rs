@@ -9,6 +9,7 @@ mod formatter;
 mod hooks;
 mod hotkeys;
 mod instance;
+mod latency;
 mod output;
 mod settings;
 mod theme;
@@ -19,6 +20,8 @@ mod ui;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "local")]
+    whisper_rs::install_logging_hooks();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "transcribe") {
         std::process::exit(cli::transcribe(&args[1..]));
@@ -26,8 +29,6 @@ fn main() -> eframe::Result<()> {
     if instance::signal_existing(!autostart::launched_hidden()) {
         return Ok(());
     }
-    #[cfg(feature = "local")]
-    whisper_rs::install_logging_hooks();
     let settings = settings::Settings::load();
     let shared = engine::Shared::new(settings);
     engine::spawn(shared.clone());
