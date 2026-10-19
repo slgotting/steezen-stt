@@ -1,6 +1,6 @@
 use crate::corrector;
 use crate::formatter::{self, Description};
-use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, fmt_ms, recordings_dir};
+use crate::engine::{Cmd, Entry, KeyCheck, PROBE_RUNS, Phase, Shared, Step, StepState, fmt_ms, hello_path, recordings_dir};
 use crate::latency::{self, Latency};
 use crate::hotkeys::{self, Hotkeys};
 use crate::settings::{Alternative, DictRule, PasteMethod, Provider, Script, Settings, Stage, config_dir, data_dir};
@@ -100,6 +100,7 @@ pub struct App {
     key_input: String,
     script_tests: Arc<Mutex<std::collections::HashMap<usize, String>>>,
     generating: Arc<Mutex<std::collections::HashMap<usize, (String, Option<Result<Description, String>>)>>>,
+    hello_rec: Option<crate::audio::Recording>,
 }
 
 impl App {
@@ -134,6 +135,7 @@ impl App {
             test_input: "I asked cloud to fix the sequel query.".into(),
             test_output: Arc::default(),
             installed: transcribe::installed_local_models(),
+            hello_rec: None,
             key_input: String::new(),
             script_tests: Arc::default(),
             generating: Arc::default(),
@@ -295,7 +297,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(PADDING)).show(ui, |ui| match self.page {
             Page::Home => self.home(ui),
             Page::History => self.history(ui),
-            Page::Stats => stats_page(ui, &self.shared.latency),
+            Page::Stats => {
+                self.baseline_card(ui);
+                stats_page(ui, &self.shared.latency);
+            }
             Page::Settings => self.settings(ui),
         });
         let ctx = ui.ctx().clone();
@@ -446,6 +451,101 @@ impl App {
                 });
             });
         ui.add_space(4.0);
+    }
+
+    fn baseline_card(&mut self, ui: &mut Ui) {
+        let s = self.shared.settings();
+        let key = latency::key(s.provider, s.model(s.provider));
+        let name = key.replacen(':', " · ", 1);
+        let clip = std::fs::read(hello_path()).ok().and_then(|b| crate::audio::read_wav(&b).ok()).map(|(samples, rate)| samples.len() as f32 / rate as f32);
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(bold("Baseline check", 15.0).color(TEXT));
+            ui.label(muted(format!("Record a short clip saying \"hello\", then send it to {name} {PROBE_RUNS} times while the service seems healthy. Nothing changes until you choose to use the result. The baseline is the reply time for a clip of almost no audio; the rate per second and the spread are then measured only on the time above it.")).small());
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let recording = self.hello_rec.is_some();
+                if ui.button(if recording { "⏹ Stop" } else if clip.is_some() { "⏺ Record again" } else { "⏺ Record hello clip" }).clicked() {
+                    match self.hello_rec.take() {
+                        Some(rec) => {
+                            let (samples, _) = rec.finish();
+                            if let Err(e) = crate::settings::write_private(&hello_path(), &crate::audio::wav_bytes(&samples, crate::audio::WHISPER_RATE)) {
+                                self.shared.set_notice(format!("Couldn't save the hello clip: {e}"), true);
+                            }
+                        }
+                        None => match crate::audio::start(&s.input_device) {
+                            Ok(rec) => self.hello_rec = Some(rec),
+                            Err(e) => self.shared.set_notice(format!("Couldn't start recording: {e}"), true),
+                        },
+                    }
+                }
+                ui.label(muted(match (recording, clip) {
+                    (true, _) => "Recording… say \"hello\" and press Stop.".to_string(),
+                    (false, Some(secs)) => format!("Clip saved ({secs:.1} s)."),
+                    (false, None) => "No clip yet.".to_string(),
+                }));
+            });
+            let probe = self.shared.probe.lock().unwrap();
+            let online = s.provider != Provider::Local;
+            let can_test = online && clip.is_some() && !probe.running && self.hello_rec.is_none();
+            let label = if probe.running { format!("Testing… {} of {PROBE_RUNS}", probe.runs.len() + 1) } else { format!("Test against {name}") };
+            let test = ui.add_enabled(can_test, egui::Button::new(label));
+            let test = if online { test } else { test.on_disabled_hover_text("Choose an online service in Settings → Transcription first.") };
+            let start = test.clicked();
+            if !probe.runs.is_empty() {
+                egui::Grid::new("probe").num_columns(4).spacing([16.0, 4.0]).striped(true).show(ui, |ui| {
+                    for h in ["Run", "Upload", "Reply", "Heard"] {
+                        ui.label(muted(h).small());
+                    }
+                    ui.end_row();
+                    for (i, (result, timing)) in probe.runs.iter().enumerate() {
+                        ui.label(format!("{}", i + 1));
+                        ui.label(timing.map_or("–".into(), |t| fmt_ms(t.send_ms)));
+                        ui.label(timing.map_or("–".into(), |t| fmt_ms(t.wait_ms)));
+                        match result {
+                            Ok(text) => ui.label(RichText::new(format!("\"{text}\"")).color(TEXT)),
+                            Err(e) => ui.label(RichText::new(e).color(RED)),
+                        };
+                        ui.end_row();
+                    }
+                });
+            }
+            let mut set = None;
+            if let (false, Some(ms)) = (probe.running, probe.median_wait()) {
+                let target = probe.key.replacen(':', " · ", 1);
+                if ui.button(format!("Use {} as the baseline for {target}", fmt_ms(ms))).on_hover_text("The middle of the reply times above. Only use it if they look normal for a healthy service.").clicked() {
+                    set = Some((probe.key.clone(), Some(ms as f64)));
+                }
+            }
+            drop(probe);
+            let current = self.shared.latency.baseline(&key);
+            ui.horizontal_wrapped(|ui| {
+                match current.manual {
+                    Some(m) => {
+                        ui.label(muted(format!("{name} uses your baseline of {}, set {}.", fmt_ms(m.ms as u64), m.time.format("%b %d, %H:%M"))));
+                        if ui.small_button("Go back to the fitted baseline").clicked() {
+                            set = Some((key.clone(), None));
+                        }
+                    }
+                    None => {
+                        ui.label(muted(format!("{name} uses the baseline fitted from your dictations{}.", current.fit().map_or(String::new(), |(b, _)| format!(" ({})", fmt_ms(b.max(0.0) as u64))))));
+                    }
+                }
+            });
+            if let Some((k, ms)) = set {
+                self.shared.latency.set_manual(&k, ms);
+                if ms.is_some() {
+                    *self.shared.probe.lock().unwrap() = Default::default();
+                }
+            }
+            if start {
+                self.shared.test_baseline();
+            }
+        });
+        if self.hello_rec.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        }
+        ui.add_space(8.0);
     }
 
     fn history(&mut self, ui: &mut Ui) {
@@ -944,7 +1044,7 @@ fn stat_rows(b: &latency::Baseline) -> Vec<(&'static str, String, &'static str)>
         ("Average reply time", avg(t.wait_ms), "From the end of the upload until the transcript arrives."),
         ("Average total time", avg(t.send_ms + t.wait_ms), ""),
         ("Reply time per audio second, overall", if t.secs > 0.0 { per(t.wait_ms / t.secs) } else { "–".into() }, "Total reply time divided by total audio. Short clips inflate this because the fixed overhead is included."),
-        ("Fixed overhead (baseline)", fit.map_or("–".into(), |(base, _)| fmt_ms(base.max(0.0) as u64)), "The reply time the line predicts for a clip of zero length."),
+        ("Fixed overhead (baseline)", fit.map_or("–".into(), |(base, _)| format!("{}{}", fmt_ms(base.max(0.0) as u64), if b.manual.is_some() { " (set by you)" } else { " (fitted)" })), "The reply time for a clip of zero length: your hello-clip baseline if you set one, otherwise where the fitted line starts."),
         ("Reply time per audio second, above the baseline", fit.map_or("–".into(), |(_, rate)| per(rate)), "The slope of the line: what each extra second of audio adds."),
         ("Spread above expected (1 SD)", if b.samples > 1 { fmt_ms(b.sd_ms() as u64) } else { "–".into() }, "How far replies usually land from the line; larger slowdowns are capped so one bad reply can't skew it."),
         ("Local starts after (10 s / 60 s clip)", match (b.threshold_ms(10.0), b.threshold_ms(60.0)) {

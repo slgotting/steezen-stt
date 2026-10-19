@@ -314,6 +314,10 @@ pub fn race(remote: Vec<Settings>, local_plan: Vec<Settings>, secs: f64, runner:
     Race { attempts, winner, local_started: local, threshold, pending, late: rx }
 }
 
+pub fn timed_cloud(samples: &[f32], settings: &Settings) -> (Result<String, String>, Option<Timing>) {
+    transcribe_cloud(settings.provider, samples, settings, Box::new(|| {}))
+}
+
 #[cfg(test)]
 pub fn transcribe(samples: &[f32], settings: &Settings, local: &LocalEngine) -> Result<String, String> {
     match settings.provider {

@@ -31,6 +31,12 @@ pub struct Sample {
     pub slow: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Manual {
+    pub ms: f64,
+    pub time: chrono::DateTime<chrono::Local>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub samples: u32,
@@ -44,10 +50,16 @@ pub struct Baseline {
     pub totals: Totals,
     #[serde(default)]
     pub recent: Vec<Sample>,
+    #[serde(default)]
+    pub manual: Option<Manual>,
 }
 
 impl Baseline {
     pub fn fit(&self) -> Option<(f64, f64)> {
+        if let Some(m) = self.manual {
+            let slope = if self.sxx > 0.0 { ((self.sxy - m.ms * self.sx) / self.sxx).max(0.0) } else { 0.0 };
+            return Some((m.ms, slope));
+        }
         if self.w <= 0.0 {
             return None;
         }
@@ -148,15 +160,31 @@ impl Latency {
         b.recent.push(Sample { time: chrono::Local::now(), secs, send_ms, wait_ms, expected_ms, slow });
         let excess = b.recent.len().saturating_sub(RECENT);
         b.recent.drain(..excess);
-        if let Some(path) = &self.path
-            && let Ok(bytes) = serde_json::to_vec_pretty(&*map) {
-                let _ = write_private(path, &bytes);
-            }
+        self.save(&map);
         match slow {
             true => Recorded::Slow,
             false if self.degraded.swap(false, Ordering::SeqCst) => Recorded::Recovered,
             false => Recorded::Normal,
         }
+    }
+
+    pub fn set_manual(&self, key: &str, ms: Option<f64>) {
+        let mut map = self.baselines.lock().unwrap();
+        let b = map.entry(key.to_string()).or_default();
+        b.manual = ms.map(|ms| Manual { ms, time: chrono::Local::now() });
+        let residuals: Vec<f64> = b.recent.iter().filter_map(|s| b.expected_ms(s.secs).map(|e| s.wait_ms as f64 - e)).collect();
+        if residuals.len() >= 2 {
+            let limit = OUTLIER_SDS * b.sd_ms().max(MIN_THRESHOLD_MS / OUTLIER_SDS);
+            b.var = residuals.iter().map(|r| r.min(limit).powi(2)).sum::<f64>() / residuals.len() as f64;
+        }
+        self.save(&map);
+    }
+
+    fn save(&self, map: &HashMap<String, Baseline>) {
+        if let Some(path) = &self.path
+            && let Ok(bytes) = serde_json::to_vec_pretty(map) {
+                let _ = write_private(path, &bytes);
+            }
     }
 
     pub fn mark_degraded(&self) -> bool {
@@ -238,6 +266,25 @@ mod tests {
         }).collect();
         let (base, rate) = trained(&pts).fit().unwrap();
         assert!((base - 900.0).abs() < 60.0 && (rate - 30.0).abs() < 3.0, "{base} {rate}");
+    }
+
+    #[test]
+    fn a_manual_baseline_pins_the_overhead_and_fits_only_the_time_above_it() {
+        let l = Latency::in_memory();
+        for i in 0..30u64 {
+            let secs = [3.0, 10.0, 30.0][i as usize % 3];
+            let slowdown = if i % 2 == 0 { 4000 } else { 0 };
+            l.record("k", secs, 50, 1000 + secs as u64 * 20 + slowdown);
+        }
+        let fitted = l.baseline("k").fit().unwrap().0;
+        assert!(fitted > 2000.0, "slow periods pull the fitted overhead up: {fitted}");
+        l.set_manual("k", Some(1000.0));
+        let b = l.baseline("k");
+        let (base, rate) = b.fit().unwrap();
+        assert_eq!(base, 1000.0);
+        assert!(rate > 0.0 && b.manual.is_some());
+        l.set_manual("k", None);
+        assert!((l.baseline("k").fit().unwrap().0 - fitted).abs() < 1e-6);
     }
 
     #[test]

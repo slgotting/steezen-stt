@@ -89,6 +89,27 @@ pub struct Entry {
     pub audio: Option<String>,
 }
 
+pub const PROBE_RUNS: usize = 3;
+
+#[derive(Default)]
+pub struct Probe {
+    pub running: bool,
+    pub key: String,
+    pub runs: Vec<(Result<String, String>, Option<transcribe::Timing>)>,
+}
+
+impl Probe {
+    pub fn median_wait(&self) -> Option<u64> {
+        let mut waits: Vec<u64> = self.runs.iter().filter(|(r, _)| r.is_ok()).filter_map(|(_, t)| t.map(|t| t.wait_ms)).collect();
+        waits.sort();
+        waits.get(waits.len() / 2).copied()
+    }
+}
+
+pub fn hello_path() -> std::path::PathBuf {
+    data_dir().join("hello.wav")
+}
+
 pub struct Shared {
     pub settings: RwLock<Settings>,
     pub history: Mutex<Vec<Entry>>,
@@ -107,6 +128,7 @@ pub struct Shared {
     pub key_check: Mutex<KeyCheck>,
     pub missed: Mutex<Missed>,
     pub jev: Mutex<JevStats>,
+    pub probe: Mutex<Probe>,
 }
 
 fn history_path() -> std::path::PathBuf {
@@ -152,6 +174,7 @@ impl Shared {
             key_check: Mutex::new(KeyCheck::Unchecked),
             missed: Mutex::new(Missed::default()),
             jev: Mutex::new(JevStats::default()),
+            probe: Mutex::new(Probe::default()),
         })
     }
 
@@ -235,6 +258,25 @@ impl Shared {
                 Ok(()) => shared.set_notice(format!("Downloaded {name}"), false),
                 Err(e) => shared.set_notice(format!("Download of {name} failed: {e}"), true),
             }
+        });
+    }
+
+    pub fn test_baseline(self: &Arc<Self>) {
+        let settings = self.settings();
+        let samples = match std::fs::read(hello_path()).map_err(|e| e.to_string()).and_then(|b| audio::read_wav(&b)) {
+            Ok((samples, rate)) => audio::resample(&samples, rate, WHISPER_RATE),
+            Err(e) => return self.set_notice(format!("Couldn't read the hello clip: {e}"), true),
+        };
+        *self.probe.lock().unwrap() = Probe { running: true, key: crate::latency::key(settings.provider, settings.model(settings.provider)), runs: Vec::new() };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            for _ in 0..PROBE_RUNS {
+                let run = transcribe::timed_cloud(&samples, &settings);
+                shared.probe.lock().unwrap().runs.push(run);
+                shared.repaint();
+            }
+            shared.probe.lock().unwrap().running = false;
+            shared.repaint();
         });
     }
 
