@@ -4,7 +4,7 @@ use crate::latency::Latency;
 use crate::transcribe::{LocalEngine, Notice, Notify, local_models, plan, race, real_runner};
 use std::sync::Arc;
 
-const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>] [--local]\nTranscribes a 16-bit PCM WAV and prints the text: the service chosen in Settings first, then the other online service you have a key for. A local whisper.cpp model (your fallback list, or the best downloaded model) starts at once if a service fails, or alongside it when the service is unusually slow for the clip length; the first good result wins. The service used is printed to stderr as \"transcribed by: …\".\n--local skips the online services and uses only the downloaded whisper.cpp models.";
+const USAGE: &str = "usage: steezen-stt transcribe <file.wav> [--prompt <words>] [--local]\nTranscribes a 16-bit PCM WAV and prints the text: the main service chosen in Settings first. The fallback chosen in Settings (another online service, or a local whisper.cpp model from your fallback list or the best downloaded one) starts at once if the main service fails, or alongside it when it is unusually slow for the clip length; the first good result wins. The service used is printed to stderr as \"transcribed by: …\".\n--local skips the online services and uses only the downloaded whisper.cpp models.";
 
 pub fn transcribe(args: &[String]) -> i32 {
     let (mut file, mut prompt, mut local) = (None, None, false);

@@ -126,6 +126,7 @@ pub struct Attempt {
     pub ms: u64,
     pub timing: Option<Timing>,
     pub result: Result<String, String>,
+    pub fallback: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,7 +137,7 @@ pub enum Trigger {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Notice {
-    LocalStarted(Trigger),
+    FallbackStarted(Trigger, Provider),
     Recovered,
 }
 
@@ -162,11 +163,12 @@ impl Signal {
 }
 
 impl Notice {
-    pub fn text(self) -> (&'static str, &'static str) {
+    pub fn text(self) -> (&'static str, String) {
+        let name = |p: Provider| if p == Provider::Local { "local transcription".to_string() } else { p.info().label.to_string() };
         match self {
-            Notice::LocalStarted(Trigger::Slow) => ("Transcription is slow", "Remote transcription is responding slowly. Starting local transcription."),
-            Notice::LocalStarted(Trigger::Failed) => ("Transcription failed", "Remote transcription failed. Starting local transcription."),
-            Notice::Recovered => ("Transcription recovered", "Remote transcription performance has recovered."),
+            Notice::FallbackStarted(Trigger::Slow, p) => ("Transcription is slow", format!("Remote transcription is responding slowly. Starting {}.", name(p))),
+            Notice::FallbackStarted(Trigger::Failed, p) => ("Transcription failed", format!("Remote transcription failed. Starting {}.", name(p))),
+            Notice::Recovered => ("Transcription recovered", "Remote transcription performance has recovered.".to_string()),
         }
     }
 }
@@ -177,26 +179,31 @@ pub type Notify = Arc<dyn Fn(Notice) + Send + Sync>;
 pub struct Race {
     pub attempts: Vec<Attempt>,
     pub winner: Option<usize>,
-    pub local_started: Option<(Trigger, u64)>,
+    pub fallback_started: Option<(Trigger, u64)>,
+    pub fallback_name: String,
     pub threshold: Option<Duration>,
     pub pending: Vec<String>,
     pub late: Receiver<Msg>,
 }
 
+pub fn lane_name(provider: Provider) -> &'static str {
+    if provider == Provider::Local { "Local" } else { provider.info().label }
+}
+
 pub fn plan(settings: &Settings) -> (Vec<Settings>, Vec<Settings>) {
     let with = |provider: Provider, local_model: &str| Settings { provider, local_model: local_model.to_string(), ..settings.clone() };
-    let mut local: Vec<Settings> = local_models(settings).iter().map(|m| with(Provider::Local, m)).collect();
-    if settings.provider == Provider::Local {
-        if local.is_empty() {
-            local.push(settings.clone());
-        }
-        return (Vec::new(), local);
-    }
-    let remote = std::iter::once(settings.provider)
-        .chain(Provider::ALL.into_iter().filter(|p| *p != Provider::Local && *p != settings.provider && !settings.api_key(*p).is_empty()))
-        .map(|p| with(p, &settings.local_model))
-        .collect();
-    (remote, local)
+    let locals = |s: &Settings| local_models(s).iter().map(|m| with(Provider::Local, m)).collect::<Vec<_>>();
+    let main = match settings.provider {
+        Provider::Local => Some(locals(settings)).filter(|l| !l.is_empty()).unwrap_or_else(|| vec![settings.clone()]),
+        p => vec![with(p, &settings.local_model)],
+    };
+    let fallback = match settings.fallback.filter(|f| *f != settings.provider) {
+        None => Vec::new(),
+        Some(Provider::Local) => locals(settings),
+        Some(p) if settings.api_key(p).is_empty() => Vec::new(),
+        Some(p) => vec![with(p, &settings.local_model)],
+    };
+    (main, fallback)
 }
 
 pub fn local_models(settings: &Settings) -> Vec<String> {
@@ -224,20 +231,26 @@ pub fn real_runner(samples: Arc<[f32]>, local: Arc<LocalEngine>) -> Runner {
             Provider::Local => (local.transcribe(&samples, s, signal.cancel.clone()), None),
             p => transcribe_cloud(p, &samples, s, signal.on_uploaded()),
         };
-        Attempt { provider: s.provider, model: s.model(s.provider).to_string(), ms: started.elapsed().as_millis() as u64, timing, result }
+        Attempt { provider: s.provider, model: s.model(s.provider).to_string(), ms: started.elapsed().as_millis() as u64, timing, result, fallback: false }
     })
 }
 
-fn spawn_lane(plan: Vec<Settings>, runner: Runner, cancel: Arc<AtomicBool>, tx: Sender<Msg>, record: Option<(Arc<Latency>, f64, Notify)>) {
+struct Lane {
+    plan: Vec<Settings>,
+    fallback: bool,
+}
+
+fn spawn_lane(lane: Lane, runner: Runner, cancel: Arc<AtomicBool>, tx: Sender<Msg>, record: Option<(Arc<Latency>, f64, Notify)>) {
     std::thread::spawn(move || {
         let signal = Signal { cancel, tx };
-        for s in plan {
+        for s in lane.plan {
             if signal.cancelled() {
                 break;
             }
-            let a = runner(&s, &signal);
+            let mut a = runner(&s, &signal);
+            a.fallback = lane.fallback;
             if let (Some((latency, secs, notify)), Ok(_), Some(t)) = (&record, &a.result, a.timing)
-                && let Recorded::Recovered = latency.record(&latency::key(a.provider, &a.model), *secs, t.send_ms, t.wait_ms) {
+                && let Recorded::Recovered = latency.record(&latency::key(a.provider, &a.model), *secs, t.send_ms, t.wait_ms, !lane.fallback) {
                     notify(Notice::Recovered);
                 }
             let ok = a.result.is_ok();
@@ -248,31 +261,34 @@ fn spawn_lane(plan: Vec<Settings>, runner: Runner, cancel: Arc<AtomicBool>, tx: 
     });
 }
 
-pub fn race(remote: Vec<Settings>, local_plan: Vec<Settings>, secs: f64, runner: Runner, latency: Arc<Latency>, notify: Notify) -> Race {
+pub fn race(main: Vec<Settings>, fallback_plan: Vec<Settings>, secs: f64, runner: Runner, latency: Arc<Latency>, notify: Notify) -> Race {
     let started = Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
     let (sender, rx) = std::sync::mpsc::channel();
-    let mut tx = (!local_plan.is_empty()).then(|| (sender.clone(), local_plan));
-    let mut local = None;
-    let threshold = remote.first().and_then(|s| latency.threshold(&latency::key(s.provider, s.model(s.provider)), secs)).filter(|_| tx.is_some());
-    let remote_labels: Vec<String> = remote.iter().map(|s| format!("{} ({})", s.provider.info().label, s.model(s.provider))).collect();
-    let start_local = |trigger: Trigger, tx: &mut Option<(Sender<Msg>, Vec<Settings>)>, local: &mut Option<(Trigger, u64)>| {
+    let primary = main.first().map(|s| (s.provider, s.model(s.provider).to_string()));
+    let racing = primary.as_ref().is_some_and(|(p, _)| *p != Provider::Local);
+    let (main_len, fallback_len) = (main.len(), fallback_plan.len());
+    let main_name = primary.as_ref().map_or("", |(p, _)| lane_name(*p)).to_string();
+    let fallback_provider = fallback_plan.first().map(|s| s.provider);
+    let fallback_name = fallback_provider.map_or("", lane_name).to_string();
+    let mut tx = (!fallback_plan.is_empty()).then(|| (sender.clone(), fallback_plan));
+    let mut fallback_started = None;
+    let threshold = primary.as_ref().filter(|_| racing).and_then(|(p, m)| latency.threshold(&latency::key(*p, m), secs)).filter(|_| tx.is_some());
+    let record = Some((latency.clone(), secs, notify.clone()));
+    let start_fallback = |trigger: Trigger, tx: &mut Option<(Sender<Msg>, Vec<Settings>)>, started_at: &mut Option<(Trigger, u64)>| {
         if let Some((tx, plan)) = tx.take() {
-            *local = Some((trigger, started.elapsed().as_millis() as u64));
-            if latency.mark_degraded() {
-                notify(Notice::LocalStarted(trigger));
-            }
-            spawn_lane(plan, runner.clone(), cancel.clone(), tx, None);
+            *started_at = Some((trigger, started.elapsed().as_millis() as u64));
+            if latency.mark_degraded()
+                && let Some(p) = fallback_provider {
+                    notify(Notice::FallbackStarted(trigger, p));
+                }
+            spawn_lane(Lane { plan, fallback: true }, runner.clone(), cancel.clone(), tx, record.clone());
         }
     };
-    match remote.is_empty() {
-        true => {
-            if let Some((tx, plan)) = tx.take() {
-                spawn_lane(plan, runner.clone(), cancel.clone(), tx, None);
-            }
-        }
-        false => spawn_lane(remote, runner.clone(), cancel.clone(), sender, Some((latency.clone(), secs, notify.clone()))),
+    if !racing {
+        tx = None;
     }
+    spawn_lane(Lane { plan: main, fallback: false }, runner.clone(), cancel.clone(), sender, record.clone().filter(|_| racing));
     let mut deadline = None;
     let mut attempts: Vec<Attempt> = Vec::new();
     let winner = loop {
@@ -280,7 +296,7 @@ pub fn race(remote: Vec<Settings>, local_plan: Vec<Settings>, secs: f64, runner:
             Some(d) => match rx.recv_timeout(d - Instant::now().min(d)) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => {
-                    start_local(Trigger::Slow, &mut tx, &mut local);
+                    start_fallback(Trigger::Slow, &mut tx, &mut fallback_started);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => None,
@@ -291,27 +307,29 @@ pub fn race(remote: Vec<Settings>, local_plan: Vec<Settings>, secs: f64, runner:
             None => break None,
             Some(Msg::Uploaded) => deadline = deadline.or(threshold.map(|t| Instant::now() + t)),
             Some(Msg::Done(a)) => {
-                let (ok, remote) = (a.result.is_ok(), a.provider != Provider::Local);
+                let (ok, from_main) = (a.result.is_ok(), !a.fallback);
                 attempts.push(a);
                 if ok {
                     break Some(attempts.len() - 1);
                 }
-                if remote {
-                    start_local(Trigger::Failed, &mut tx, &mut local);
+                if from_main {
+                    start_fallback(Trigger::Failed, &mut tx, &mut fallback_started);
                 }
             }
         }
     };
     cancel.store(true, Ordering::SeqCst);
-    let remote_done = attempts.iter().filter(|a| a.provider != Provider::Local).count();
-    let mut pending: Vec<String> = remote_labels.get(remote_done).cloned().into_iter().collect();
-    if local.is_some() && !attempts.iter().any(|a| a.provider == Provider::Local) {
-        pending.push("Local".into());
+    let finished = |fallback: bool, len: usize| attempts.iter().filter(|a| a.fallback == fallback).count() >= len;
+    let mut pending = Vec::new();
+    if winner.is_some() {
+        if !finished(false, main_len) {
+            pending.push(main_name);
+        }
+        if fallback_started.is_some() && !finished(true, fallback_len) {
+            pending.push(fallback_name.clone());
+        }
     }
-    if winner.is_none() {
-        pending.clear();
-    }
-    Race { attempts, winner, local_started: local, threshold, pending, late: rx }
+    Race { attempts, winner, fallback_started, fallback_name, threshold, pending, late: rx }
 }
 
 pub fn timed_cloud(samples: &[f32], settings: &Settings) -> (Result<String, String>, Option<Timing>) {
@@ -542,32 +560,51 @@ mod info_tests {
 mod order_tests {
     use super::*;
 
-    fn order(s: &Settings) -> Vec<String> {
-        plan(s).0.iter().map(|a| format!("{:?}", a.provider)).collect()
+    fn names(plan: &[Settings]) -> Vec<String> {
+        plan.iter().map(|a| format!("{:?}", a.provider)).collect()
+    }
+
+    fn keyed(provider: Provider, fallback: Option<Provider>) -> Settings {
+        Settings { provider, fallback, openai_api_key: "sk-x".into(), groq_api_key: "gsk-x".into(), ..Settings::default() }
     }
 
     #[test]
-    fn cloud_providers_with_keys_come_first() {
-        let s = Settings { provider: Provider::OpenAI, openai_api_key: "sk-x".into(), groq_api_key: "gsk-x".into(), ..Settings::default() };
-        assert_eq!(order(&s), ["OpenAI", "Groq"]);
-        let g = Settings { provider: Provider::Groq, ..s.clone() };
-        assert_eq!(order(&g), ["Groq", "OpenAI"]);
+    fn the_main_service_runs_alone_and_the_chosen_fallback_races_it() {
+        let (main, fallback) = plan(&keyed(Provider::OpenAI, Some(Provider::Groq)));
+        assert_eq!((names(&main), names(&fallback)), (vec!["OpenAI".to_string()], vec!["Groq".to_string()]));
+        let (main, fallback) = plan(&keyed(Provider::Groq, Some(Provider::OpenAI)));
+        assert_eq!((names(&main), names(&fallback)), (vec!["Groq".to_string()], vec!["OpenAI".to_string()]));
     }
 
     #[test]
-    fn a_cloud_provider_without_a_key_is_skipped() {
-        let s = Settings { provider: Provider::OpenAI, openai_api_key: "sk-x".into(), groq_api_key: String::new(), ..Settings::default() };
+    fn no_fallback_means_no_other_service_is_tried() {
+        let (main, fallback) = plan(&keyed(Provider::OpenAI, None));
+        assert_eq!(names(&main), ["OpenAI"]);
+        assert!(fallback.is_empty());
+        assert!(plan(&keyed(Provider::OpenAI, Some(Provider::OpenAI))).1.is_empty());
+    }
+
+    #[test]
+    fn a_cloud_fallback_without_a_key_is_dropped() {
+        let s = Settings { groq_api_key: String::new(), ..keyed(Provider::OpenAI, Some(Provider::Groq)) };
         if std::env::var("GROQ_API_KEY").is_err() {
-            assert_eq!(order(&s), ["OpenAI"]);
+            assert!(plan(&s).1.is_empty());
         }
     }
 
     #[test]
-    fn local_only_plans_have_no_remote_lane() {
+    fn a_local_fallback_lists_only_downloaded_models() {
+        let s = Settings { local_fallback: vec!["ggml-not-downloaded.bin".into()], ..keyed(Provider::OpenAI, Some(Provider::Local)) };
+        let installed = installed_local_models();
+        assert!(plan(&s).1.iter().all(|f| f.provider == Provider::Local && installed.contains(&f.local_model)));
+    }
+
+    #[test]
+    fn local_only_plans_have_no_fallback() {
         let s = Settings { provider: Provider::Local, local_model: "ggml-nope.bin".into(), ..Settings::default() };
-        let (remote, local) = plan(&s);
-        assert!(remote.is_empty());
-        assert!(!local.is_empty());
+        let (main, fallback) = plan(&s);
+        assert!(main.iter().all(|m| m.provider == Provider::Local) && !main.is_empty());
+        assert!(fallback.is_empty());
     }
 
     #[test]
@@ -602,26 +639,26 @@ mod race_tests {
             let (ms, result) = spec[&s.provider];
             let started = Instant::now();
             let remote = s.provider != Provider::Local;
-            if remote {
+            if remote && !signal.cancelled() {
                 std::thread::sleep(Duration::from_millis(20));
                 signal.on_uploaded()();
             }
             while started.elapsed() < Duration::from_millis(ms) {
                 if !remote && signal.cancelled() {
-                    return Attempt { provider: s.provider, model: s.model(s.provider).into(), ms: 0, timing: None, result: Err("cancelled".into()) };
+                    return Attempt { provider: s.provider, model: s.model(s.provider).into(), ms: 0, timing: None, result: Err("cancelled".into()), fallback: false };
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             let total = started.elapsed().as_millis() as u64;
             let timing = remote.then_some(Timing { send_ms: 20, wait_ms: total - 20 });
-            Attempt { provider: s.provider, model: s.model(s.provider).into(), ms: total, timing, result: result.map(String::from).map_err(String::from) }
+            Attempt { provider: s.provider, model: s.model(s.provider).into(), ms: total, timing, result: result.map(String::from).map_err(String::from), fallback: false }
         });
         Fake { runner, calls, notices: Arc::new(Mutex::new(Vec::new())), latency: Arc::new(Latency::in_memory()) }
     }
 
     fn trained(f: &Fake, samples: u32) {
         for i in 0..samples {
-            f.latency.record(&latency::key(Provider::OpenAI, "gpt-4o-transcribe"), 5.0, 20, 300 + (i as u64 % 3) * 10);
+            f.latency.record(&latency::key(Provider::OpenAI, "gpt-4o-transcribe"), 5.0, 20, 300 + (i as u64 % 3) * 10, true);
         }
     }
 
@@ -649,7 +686,7 @@ mod race_tests {
         trained(&f, 10);
         let r = run(&f, true, 5.0);
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")));
-        assert!(r.local_started.is_none());
+        assert!(r.fallback_started.is_none());
         assert_eq!(*f.calls.lock().unwrap(), [Provider::OpenAI]);
         assert!(f.notices.lock().unwrap().is_empty());
     }
@@ -660,11 +697,11 @@ mod race_tests {
         trained(&f, 10);
         let r = run(&f, true, 5.0);
         assert_eq!(won(&r), Some((Provider::Local, "local")));
-        let (trigger, at) = r.local_started.unwrap();
+        let (trigger, at) = r.fallback_started.unwrap();
         assert_eq!(trigger, Trigger::Slow);
         assert!((1500..2400).contains(&at), "{at}");
-        assert_eq!(*f.notices.lock().unwrap(), [Notice::LocalStarted(Trigger::Slow)]);
-        assert_eq!(r.pending, ["OpenAI (gpt-4o-transcribe)"]);
+        assert_eq!(*f.notices.lock().unwrap(), [Notice::FallbackStarted(Trigger::Slow, Provider::Local)]);
+        assert_eq!(r.pending, ["OpenAI"]);
         match r.late.recv_timeout(Duration::from_secs(3)) {
             Ok(Msg::Done(a)) => assert_eq!((a.provider, a.result.unwrap().as_str()), (Provider::OpenAI, "remote")),
             _ => panic!("late remote result should still arrive for diagnostics"),
@@ -678,7 +715,7 @@ mod race_tests {
         trained(&f, 10);
         let r = run(&f, true, 5.0);
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")));
-        assert_eq!(r.local_started.map(|l| l.0), Some(Trigger::Slow));
+        assert_eq!(r.fallback_started.map(|l| l.0), Some(Trigger::Slow));
         assert_eq!(r.pending, ["Local"]);
         let late: Vec<_> = r.late.iter().filter_map(|m| match m { Msg::Done(a) => Some(a), _ => None }).collect();
         assert!(late.iter().all(|a| a.result.is_err()), "a losing local run is cancelled, never a second result");
@@ -703,8 +740,8 @@ mod race_tests {
         let f = fake(&[(Provider::OpenAI, 50, Err("boom")), (Provider::Local, 100, Ok("local"))]);
         let r = run(&f, true, 5.0);
         assert_eq!(won(&r), Some((Provider::Local, "local")));
-        assert_eq!(r.local_started.map(|l| l.0), Some(Trigger::Failed));
-        assert_eq!(*f.notices.lock().unwrap(), [Notice::LocalStarted(Trigger::Failed)]);
+        assert_eq!(r.fallback_started.map(|l| l.0), Some(Trigger::Failed));
+        assert_eq!(*f.notices.lock().unwrap(), [Notice::FallbackStarted(Trigger::Failed, Provider::Local)]);
     }
 
     #[test]
@@ -732,7 +769,7 @@ mod race_tests {
         trained(&f, 10);
         let r = run(&f, false, 5.0);
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")));
-        assert!(r.threshold.is_none() && r.local_started.is_none());
+        assert!(r.threshold.is_none() && r.fallback_started.is_none());
         assert!(f.notices.lock().unwrap().is_empty());
     }
 
@@ -742,14 +779,14 @@ mod race_tests {
         let key = latency::key(Provider::OpenAI, "gpt-4o-transcribe");
         for i in 0..20u64 {
             let secs = [5.0, 20.0, 60.0][i as usize % 3];
-            f.latency.record(&key, secs, 20, 300 + secs as u64 * 40 + (i % 2) * 20);
+            f.latency.record(&key, secs, 20, 300 + secs as u64 * 40 + (i % 2) * 20, true);
         }
         let short = f.latency.threshold(&key, 5.0).unwrap();
         let long = f.latency.threshold(&key, 60.0).unwrap();
         assert!(long > short + Duration::from_millis(1500), "{short:?} {long:?}");
         let r = run(&f, true, 60.0);
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")), "a 60 s clip gets a longer allowance, so a 2.6 s reply is normal");
-        assert!(r.local_started.is_none());
+        assert!(r.fallback_started.is_none());
     }
 
     #[test]
@@ -758,7 +795,31 @@ mod race_tests {
         trained(&f, latency::MIN_SAMPLES - 1);
         let r = run(&f, true, 5.0);
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")));
-        assert!(r.threshold.is_none() && r.local_started.is_none());
+        assert!(r.threshold.is_none() && r.fallback_started.is_none());
+    }
+
+    #[test]
+    fn a_cloud_fallback_races_a_slow_main_service() {
+        let f = fake(&[(Provider::OpenAI, SLOW, Ok("openai")), (Provider::Groq, 100, Ok("groq"))]);
+        trained(&f, 10);
+        let groq = vec![Settings { provider: Provider::Groq, ..Settings::default() }];
+        let notices = f.notices.clone();
+        let r = race(lanes(false).0, groq, 5.0, f.runner.clone(), f.latency.clone(), Arc::new(move |n| notices.lock().unwrap().push(n)));
+        assert_eq!(won(&r), Some((Provider::Groq, "groq")));
+        assert!(r.attempts[r.winner.unwrap()].fallback);
+        assert_eq!((r.fallback_name.as_str(), r.pending.clone()), ("Groq", vec!["OpenAI".to_string()]));
+        assert_eq!(*f.notices.lock().unwrap(), [Notice::FallbackStarted(Trigger::Slow, Provider::Groq)]);
+        assert_eq!(f.latency.baseline(&latency::key(Provider::Groq, "whisper-large-v3-turbo")).samples, 1, "the fallback's reply time is recorded too");
+    }
+
+    #[test]
+    fn a_main_local_service_never_races() {
+        let f = fake(&[(Provider::Local, 100, Ok("local")), (Provider::Groq, 10, Ok("groq"))]);
+        let main = vec![Settings { provider: Provider::Local, ..Settings::default() }];
+        let r = race(main, vec![Settings { provider: Provider::Groq, ..Settings::default() }], 5.0, f.runner.clone(), f.latency.clone(), Arc::new(|_| {}));
+        assert_eq!(won(&r), Some((Provider::Local, "local")));
+        assert!(r.fallback_started.is_none());
+        assert_eq!(*f.calls.lock().unwrap(), [Provider::Local]);
     }
 
     #[test]
@@ -772,6 +833,6 @@ mod race_tests {
         let fast = fake(&[(Provider::OpenAI, 100, Ok("remote"))]);
         let r = race(lanes(false).0, vec![], 5.0, fast.runner.clone(), f.latency.clone(), { let n = f.notices.clone(); Arc::new(move |x| n.lock().unwrap().push(x)) });
         assert_eq!(won(&r), Some((Provider::OpenAI, "remote")));
-        assert_eq!(*f.notices.lock().unwrap(), [Notice::LocalStarted(Trigger::Slow), Notice::Recovered]);
+        assert_eq!(*f.notices.lock().unwrap(), [Notice::FallbackStarted(Trigger::Slow, Provider::Local), Notice::Recovered]);
     }
 }

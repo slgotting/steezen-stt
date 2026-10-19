@@ -149,7 +149,7 @@ impl Latency {
         self.baseline(key).threshold_ms(secs).map(|ms| Duration::from_millis(ms as u64))
     }
 
-    pub fn record(&self, key: &str, secs: f64, send_ms: u64, wait_ms: u64) -> Recorded {
+    pub fn record(&self, key: &str, secs: f64, send_ms: u64, wait_ms: u64, main: bool) -> Recorded {
         let mut map = self.baselines.lock().unwrap();
         let b = map.entry(key.to_string()).or_default();
         let slow = b.threshold_ms(secs).is_some_and(|t| wait_ms as f64 > t);
@@ -163,7 +163,7 @@ impl Latency {
         self.save(&map);
         match slow {
             true => Recorded::Slow,
-            false if self.degraded.swap(false, Ordering::SeqCst) => Recorded::Recovered,
+            false if main && self.degraded.swap(false, Ordering::SeqCst) => Recorded::Recovered,
             false => Recorded::Normal,
         }
     }
@@ -274,7 +274,7 @@ mod tests {
         for i in 0..30u64 {
             let secs = [3.0, 10.0, 30.0][i as usize % 3];
             let slowdown = if i % 2 == 0 { 4000 } else { 0 };
-            l.record("k", secs, 50, 1000 + secs as u64 * 20 + slowdown);
+            l.record("k", secs, 50, 1000 + secs as u64 * 20 + slowdown, true);
         }
         let fitted = l.baseline("k").fit().unwrap().0;
         assert!(fitted > 2000.0, "slow periods pull the fitted overhead up: {fitted}");
@@ -291,7 +291,7 @@ mod tests {
     fn totals_and_recent_samples_are_kept() {
         let l = Latency::in_memory();
         for i in 0..25u64 {
-            l.record("k", 4.0, 100 + i, 1000);
+            l.record("k", 4.0, 100 + i, 1000, true);
         }
         let b = l.baseline("k");
         assert_eq!(b.totals.count, 25);
@@ -304,12 +304,12 @@ mod tests {
     fn recovery_is_reported_once_after_degradation() {
         let l = Latency::in_memory();
         for i in 0..10 {
-            l.record("k", 5.0, 50, 1000 + i * 10);
+            l.record("k", 5.0, 50, 1000 + i * 10, true);
         }
         assert!(l.mark_degraded());
         assert!(!l.mark_degraded());
-        assert!(matches!(l.record("k", 5.0, 50, 30_000), Recorded::Slow));
-        assert!(matches!(l.record("k", 5.0, 50, 1000), Recorded::Recovered));
-        assert!(matches!(l.record("k", 5.0, 50, 1000), Recorded::Normal));
+        assert!(matches!(l.record("k", 5.0, 50, 30_000, true), Recorded::Slow));
+        assert!(matches!(l.record("k", 5.0, 50, 1000, true), Recorded::Recovered));
+        assert!(matches!(l.record("k", 5.0, 50, 1000, true), Recorded::Normal));
     }
 }

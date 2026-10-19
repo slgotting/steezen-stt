@@ -464,11 +464,11 @@ fn fallback_notifier(shared: &Arc<Shared>) -> transcribe::Notify {
         if !shared.settings.read().unwrap().notify_fallback {
             return;
         }
-        if matches!(n, Notice::LocalStarted(_)) {
+        if matches!(n, Notice::FallbackStarted(..)) {
             audio::play(Sound::Warning);
         }
         let (title, body) = n.text();
-        notify(title, body);
+        notify(title, &body);
     })
 }
 
@@ -505,19 +505,20 @@ fn transcribe_and_deliver(shared: &Arc<Shared>, s: &Settings, samples: &[f32], f
     }
 
     let secs = entry.duration_secs as f64;
-    let (remote, local) = transcribe::plan(s);
-    let primary = remote.first().map(|p| (p.provider.info().label, p.model(p.provider).to_string()));
-    let race = transcribe::race(remote, local, secs, transcribe::real_runner(samples.into(), shared.local.clone()), shared.latency.clone(), fallback_notifier(shared));
-    let mut started_step = race.local_started.map(|(trigger, at)| {
+    let (main, fallback) = transcribe::plan(s);
+    let primary = main.first().map(|p| (p.provider.info().label, p.model(p.provider).to_string()));
+    let race = transcribe::race(main, fallback, secs, transcribe::real_runner(samples.into(), shared.local.clone()), shared.latency.clone(), fallback_notifier(shared));
+    let fallback = race.fallback_name.clone();
+    let mut started_step = race.fallback_started.map(|(trigger, at)| {
         let (label, primary) = primary.clone().unwrap_or_default();
         let detail = match (trigger, race.threshold) {
-            (Trigger::Slow, Some(t)) => format!("{label} ({primary}) had not replied {} after the upload finished; for {secs:.1} s of audio it usually replies within {} (expected time plus one standard deviation), so local transcription started alongside it.", fmt_ms(t.as_millis() as u64), fmt_ms(t.as_millis() as u64)),
-            _ => format!("{label} ({primary}) failed, so local transcription started at once."),
+            (Trigger::Slow, Some(t)) => format!("{label} ({primary}) had not replied {} after the upload finished, which is its usual reply time for {secs:.1} s of audio plus one standard deviation, so the {fallback} fallback started alongside it.", fmt_ms(t.as_millis() as u64)),
+            _ => format!("{label} ({primary}) failed, so the {fallback} fallback started at once."),
         };
-        Step { label: format!("Local started · {}", fmt_ms(at)), detail, state: StepState::Skipped }
+        Step { label: format!("{fallback} started · {}", fmt_ms(at)), detail, state: StepState::Skipped }
     });
     for (i, a) in race.attempts.iter().enumerate() {
-        if a.provider == Provider::Local && let Some(st) = started_step.take() {
+        if a.fallback && let Some(st) = started_step.take() {
             entry.steps.push(st);
         }
         let outcome = if Some(i) == race.winner { "this result was used" } else { "not used" };
@@ -526,8 +527,7 @@ fn transcribe_and_deliver(shared: &Arc<Shared>, s: &Settings, samples: &[f32], f
     entry.steps.extend(started_step);
     for name in &race.pending {
         let detail = format!("{name} was still working when another result won; its result will be discarded.");
-        let name = if name == "Local" { name.clone() } else { name.split(" (").next().unwrap_or(name).to_string() };
-        step(&mut entry.steps, waiting_label(&name), detail, StepState::Skipped);
+        step(&mut entry.steps, waiting_label(name), detail, StepState::Skipped);
     }
     let failures: Vec<String> = race.attempts.iter().filter_map(|a| a.result.as_ref().err().filter(|e| !e.contains("cancelled")).map(|e| format!("{} ({}): {e}", a.provider.info().label, a.model))).collect();
     *late = Some(race.late);

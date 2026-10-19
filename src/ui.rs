@@ -45,7 +45,7 @@ const SECTIONS: [(Section, &str, &str); 9] = [
     (Section::Dictionary, "Dictionary", "Built-in corrector for words speech-to-text often gets wrong. Jev classifies each occurrence in context and the app replaces it only above the threshold. It runs on every transcript, before your scripts. No LLM rewrites your text."),
     (Section::Formatting, "AI formatting", "Turns a rambling dictation into tidy Markdown with a cheap OpenAI model. It runs after the dictionary and before your scripts, only when you ask for it."),
     (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → AI formatting (when asked) → your text filters, top to bottom → output → after-delivery scripts."),
-    (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything except the local takeover warning is off by default."),
+    (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything except the fallback warning is off by default."),
     (Section::General, "General", "Window, tray and history."),
 ];
 
@@ -69,7 +69,7 @@ const FEEDBACK_TOGGLES: [Toggle; 7] = [
     ("Sound when transcription completes", "", |s| &mut s.sound_complete),
     ("Notification when transcription completes", "", |s| &mut s.notify_complete),
     ("Notification on errors", "", |s| &mut s.notify_error),
-    ("Sound and notification when local transcription takes over", "A soft warning when the online service is unusually slow or failing and a local model starts, and a notification once it is back to normal.", |s| &mut s.notify_fallback),
+    ("Sound and notification when the fallback takes over", "A soft warning when the main service is unusually slow or failing and the fallback starts, and a notification once it is back to normal.", |s| &mut s.notify_fallback),
 ];
 
 type Field = fn(&mut Settings) -> &mut String;
@@ -657,7 +657,10 @@ impl App {
         if provider == Provider::Local {
             self.local_settings(ui);
         }
-        self.fallback_settings(ui);
+        self.fallback_choice(ui);
+        if self.draft.fallback == Some(Provider::Local) {
+            self.fallback_settings(ui);
+        }
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Language");
@@ -669,10 +672,51 @@ impl App {
         ui.add(egui::Slider::new(&mut self.draft.temperature, 0.0..=1.0).text("Temperature"));
     }
 
-    fn fallback_settings(&mut self, ui: &mut Ui) {
+    fn fallback_choice(&mut self, ui: &mut Ui) {
         ui.separator();
-        ui.label(bold("Local fallback", 14.0).color(TEXT));
-        ui.label(muted("If the online service fails, these downloaded models are tried from top to bottom at once. If it is unusually slow for the length of the clip (more than one standard deviation over its usual reply time), a local model starts alongside it and whichever finishes first is used; the online request is never cut off. With an empty list the best downloaded model is used.").small());
+        ui.label(bold("Fallback", 14.0).color(TEXT));
+        let main = self.draft.provider;
+        if self.draft.fallback == Some(main) {
+            self.draft.fallback = None;
+        }
+        ui.label(muted(format!("Starts at once if {} fails, or alongside it when it is unusually slow for the length of the clip (more than one standard deviation over its usual reply time). The main request is never cut off; whichever finishes first with a good result is used.", main.info().label)).small());
+        if main == Provider::Local {
+            ui.label(muted("Local is the main service, so there is nothing to race against. Pick an online service above to use a fallback.").small());
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label("Fallback service");
+            let label = self.draft.fallback.map_or("None", |p| p.info().label);
+            egui::ComboBox::from_id_salt("fallback-provider").selected_text(label).width(220.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.draft.fallback, None, "None");
+                for p in Provider::ALL.into_iter().filter(|p| *p != main) {
+                    ui.selectable_value(&mut self.draft.fallback, Some(p), p.info().label);
+                }
+            });
+        });
+        let Some(fb) = self.draft.fallback.filter(|p| *p != Provider::Local) else { return };
+        if let Some(key) = self.draft.key_field(fb) {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} API key", fb.info().label));
+                ui.add(egui::TextEdit::singleline(key).password(!self.show_keys).desired_width(320.0).hint_text(format!("or set ${}", fb.info().key_env)));
+            });
+        }
+        if self.draft.api_key(fb).is_empty() {
+            ui.label(RichText::new(format!("No {} key, so there is no fallback until you add one.", fb.info().label)).color(AMBER).small());
+        }
+        ui.horizontal(|ui| {
+            ui.label("Fallback model");
+            let mut tmp = Settings { provider: fb, ..self.draft.clone() };
+            model_combo(ui, &self.shared, &mut tmp, &[]);
+            *self.draft.model_mut(fb) = tmp.model(fb).to_string();
+            if ui.button("⟳ Refresh list").clicked() {
+                self.shared.refresh_models(fb);
+            }
+        });
+    }
+
+    fn fallback_settings(&mut self, ui: &mut Ui) {
+        ui.label(muted("Local models to try, top to bottom. With an empty list the best downloaded model is used.").small());
         latency_summary(ui, &self.shared.latency);
         let list = &mut self.draft.local_fallback;
         let (mut swap, mut remove) = (None, None);
