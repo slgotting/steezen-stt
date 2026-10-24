@@ -212,10 +212,7 @@ pub fn local_models(settings: &Settings) -> Vec<String> {
         Provider::Local => std::iter::once(settings.local_model.clone()).chain(settings.local_fallback.iter().cloned()).collect(),
         _ => settings.local_fallback.clone(),
     };
-    let defaults: Vec<String> = match configured.iter().any(|m| installed.contains(m)) {
-        true => Vec::new(),
-        false => std::iter::once(settings.local_model.clone()).chain(Provider::Local.info().fallback_models.iter().map(|m| m.to_string())).chain(installed.iter().cloned()).collect(),
-    };
+    let defaults: Vec<String> = std::iter::once(settings.local_model.clone()).chain(Provider::Local.info().fallback_models.iter().map(|m| m.to_string())).chain(installed.iter().cloned()).collect();
     configured.into_iter().chain(defaults).filter(|m| installed.contains(m)).fold(Vec::new(), |mut out, m| {
         if !out.contains(&m) {
             out.push(m);
@@ -459,25 +456,57 @@ impl LocalEngine {
 
     #[cfg(feature = "local")]
     fn transcribe(&self, samples: &[f32], settings: &Settings, cancel: Arc<AtomicBool>) -> Result<String, String> {
-        use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
         let name = &settings.local_model;
-        let path = models_dir().join(name);
-        if !path.exists() {
+        if !models_dir().join(name).exists() {
             return Err(format!("Local model {name} is not downloaded. Download it in Settings → Transcription."));
         }
         let mut guard = self.loaded.lock().unwrap();
+        let mut result = Err(String::new());
+        for (attempt, gpu) in [settings.local_use_gpu, false].into_iter().enumerate() {
+            if cancel.load(Ordering::SeqCst) {
+                return Err("Local transcription cancelled; another result already won".into());
+            }
+            if attempt > 0 || guard.as_ref().is_none_or(|l| l.name != *name || l.gpu != gpu) {
+                guard.take();
+                match Loaded::new(name, gpu) {
+                    Ok(l) => *guard = Some(l),
+                    Err(e) => {
+                        result = Err(e);
+                        continue;
+                    }
+                }
+            }
+            result = guard.as_ref().unwrap().run(samples, settings, &cancel);
+            if result.is_ok() {
+                break;
+            }
+        }
         if cancel.load(Ordering::SeqCst) {
             return Err("Local transcription cancelled; another result already won".into());
         }
-        if guard.as_ref().is_none_or(|l| l.name != *name || l.gpu != settings.local_use_gpu) {
-            guard.take();
-            let mut params = WhisperContextParameters::default();
-            params.use_gpu(settings.local_use_gpu);
-            let ctx = WhisperContext::new_with_params(&path, params).map_err(|e| format!("Failed to load {name}: {e}"))?;
-            *guard = Some(Loaded { name: name.clone(), gpu: settings.local_use_gpu, ctx });
-        }
-        let loaded = guard.as_ref().unwrap();
-        let mut state = loaded.ctx.create_state().map_err(|e| e.to_string())?;
+        let text = result.map_err(|e| format!("Local transcription failed: {e}"))?;
+        *self.last_used.lock().unwrap() = Some(Instant::now());
+        Ok(text)
+    }
+}
+
+#[cfg(feature = "local")]
+unsafe extern "C" fn cancelled(flag: *mut std::ffi::c_void) -> bool {
+    unsafe { (*(flag as *const AtomicBool)).load(Ordering::SeqCst) }
+}
+
+#[cfg(feature = "local")]
+impl Loaded {
+    fn new(name: &str, gpu: bool) -> Result<Self, String> {
+        let mut params = whisper_rs::WhisperContextParameters::default();
+        params.use_gpu(gpu);
+        let ctx = whisper_rs::WhisperContext::new_with_params(models_dir().join(name), params).map_err(|e| format!("Failed to load {name}: {e}"))?;
+        Ok(Loaded { name: name.to_string(), gpu, ctx })
+    }
+
+    fn run(&self, samples: &[f32], settings: &Settings, cancel: &Arc<AtomicBool>) -> Result<String, String> {
+        use whisper_rs::{FullParams, SamplingStrategy};
+        let mut state = self.ctx.create_state().map_err(|e| e.to_string())?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         let threads = match settings.local_threads {
             0 => std::thread::available_parallelism().map_or(4, |n| n.get().min(8)),
@@ -491,21 +520,17 @@ impl LocalEngine {
             params.set_initial_prompt(settings.prompt.trim());
         }
         params.set_no_context(true);
-        let abort = cancel.clone();
-        params.set_abort_callback_safe(move || abort.load(Ordering::SeqCst));
+        unsafe {
+            params.set_abort_callback(Some(cancelled));
+            params.set_abort_callback_user_data(Arc::as_ptr(cancel) as *mut std::ffi::c_void);
+        }
         for flag in [FullParams::set_print_special, FullParams::set_print_progress, FullParams::set_print_realtime, FullParams::set_print_timestamps] {
             flag(&mut params, false);
         }
         let mut padded = samples.to_vec();
         padded.resize(padded.len().max(WHISPER_RATE as usize + WHISPER_RATE as usize / 10), 0.0);
-        let ran = state.full(params, &padded);
-        if cancel.load(Ordering::SeqCst) {
-            return Err("Local transcription cancelled; another result already won".into());
-        }
-        ran.map_err(|e| format!("Local transcription failed: {e}"))?;
-        let text: String = state.as_iter().map(|s| s.to_string()).collect();
-        *self.last_used.lock().unwrap() = Some(Instant::now());
-        Ok(text.trim().to_string())
+        state.full(params, &padded).map_err(|e| e.to_string())?;
+        Ok(state.as_iter().map(|s| s.to_string()).collect::<String>().trim().to_string())
     }
 }
 
@@ -522,6 +547,19 @@ mod tests {
         let text = transcribe(&samples, &settings, &LocalEngine::default()).unwrap();
         println!("TRANSCRIPT: {text}");
         assert!(text.to_lowercase().contains("cloud"));
+    }
+
+    #[test]
+    #[ignore = "needs WH_TEST_WAV and a downloaded model"]
+    fn local_survives_a_dirty_heap() {
+        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
+        let settings = Settings { provider: Provider::Local, local_model: std::env::var("WH_TEST_MODEL").unwrap(), ..Settings::default() };
+        let engine = LocalEngine::default();
+        for _ in 0..3 {
+            drop((1..64).map(|n| vec![0xffu8; n]).cycle().take(20_000).collect::<Vec<_>>());
+            engine.transcribe(&samples, &settings, Arc::new(AtomicBool::new(false))).unwrap();
+        }
     }
 
     #[test]
