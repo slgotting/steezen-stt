@@ -39,7 +39,7 @@ mod linux {
     }
 
     const WMS: &[Wm] = &[
-        Wm { name: "i3", configs: &[".config/i3/config", ".i3/config"], line: "exec --no-startup-id {cmd}" },
+        Wm { name: "i3", configs: &[".config/i3/config", ".i3/config"], line: "exec --no-startup-id {quoted}" },
         Wm { name: "sway", configs: &[".config/sway/config"], line: "exec {cmd}" },
         Wm { name: "hyprland", configs: &[".config/hypr/hyprland.conf"], line: "exec-once = {cmd}" },
         Wm { name: "bspwm", configs: &[".config/bspwm/bspwmrc"], line: "{cmd} &" },
@@ -93,12 +93,14 @@ mod linux {
     pub fn apply(enabled: bool) -> std::io::Result<Status> {
         let session = session();
         let current = WMS.iter().find(|wm| session.split(':').any(|s| s == wm.name));
-        let cmd = format!("\"{}\" {HIDDEN_ARG}", exe()?.replace('\\', "\\\\").replace('"', "\\\""));
+        let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let cmd = format!("\"{}\" {HIDDEN_ARG}", escape(&exe()?));
+        let quoted = format!("\"{}\"", escape(&cmd));
         let mut status = Status { text: "Starts from the autostart folder (~/.config/autostart).".into(), warn: false };
         for wm in WMS {
             let Some(path) = config_path(wm) else { continue };
             let own = enabled && current.is_some_and(|c| c.name == wm.name) && !runs_xdg_autostart(&std::fs::read_to_string(&path)?);
-            let line = own.then(|| wm.line.replace("{cmd}", &cmd));
+            let line = own.then(|| wm.line.replace("{quoted}", &quoted).replace("{cmd}", &cmd));
             set_config_line(&path, line.as_deref())?;
             if own {
                 status.text = format!("Your session ({}) ignores the autostart folder, so it starts from {}.", wm.name, path.display());
