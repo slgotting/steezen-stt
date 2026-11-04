@@ -2,16 +2,52 @@ use crate::corrector;
 use crate::settings::{Alternative, DictRule, Provider, Settings};
 use regex::Regex;
 use reqwest::blocking::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::LazyLock;
 use std::time::Duration;
 
 const EDGE_SENTENCES: usize = 2;
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
+const MODELS_URL: &str = "https://api.openai.com/v1/models";
+const NOT_CHAT: &[&str] = &["embedding", "tts", "whisper", "transcribe", "dall-e", "image", "moderation", "realtime", "audio", "sora", "davinci", "babbage"];
 const QUESTION: &str = "`start` holds the first sentences and `end` the last sentences of a speech-to-text dictation. Is the speaker telling the dictation app itself to format, clean up or organise this very dictation (e.g. \"put this in markdown\", \"clean this up\"), as opposed to formatting being part of what they are dictating (e.g. asking a colleague to format a report or a date)?";
 
 const DESCRIBE_PROMPT: &str = "You write entries for a speech-to-text correction dictionary. A classifier reads each entry to decide, from the surrounding sentence, whether a transcribed word should be replaced by the correct word. You get the correct word, the words speech recognition mishears it as (may be empty) and the user's notes (may be empty; they say which sense of the word is meant). Reply with a JSON object: \"meaning\": one line saying what the correct word refers to and how a speaker would use it, e.g. \"Anthropic's AI assistant, which the speaker asks, tells or uses to write, fix or analyze things\"; \"triggers\": 2-5 more words, spellings or short phrases speech recognition is likely to write instead of the correct word, not repeating the given ones (think about how the word sounds aloud, including how people actually pronounce abbreviations, and about real words that sound alike), each different from the correct word ignoring case; only sound-alikes, never synonyms, expansions or the full form of an abbreviation; \"alternatives\": for each given or new misheard word that is a real word or name with its own legitimate meaning, {\"word\", \"meaning\"} describing those meanings in one line; \"context\": one or two sentences contrasting the correct word with the alternatives so they can be told apart.";
+
+#[derive(Default, Serialize, Deserialize)]
+pub struct ModelList {
+    pub fetched: i64,
+    pub models: Vec<String>,
+    #[serde(skip)]
+    pub error: Option<String>,
+}
+
+impl ModelList {
+    fn path() -> std::path::PathBuf {
+        crate::settings::cache_dir().join("format-models.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if let Ok(bytes) = serde_json::to_vec(self) {
+            let _ = crate::settings::write_private(&Self::path(), &bytes);
+        }
+    }
+}
+
+pub fn list_models(key: &str, http: &Client) -> Result<Vec<String>, String> {
+    if key.is_empty() {
+        return Err("add an OpenAI API key to list models".into());
+    }
+    let body: Value = http.get(MODELS_URL).timeout(Duration::from_secs(15)).bearer_auth(key).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()).map_err(|e| e.to_string())?;
+    let mut models: Vec<String> = body["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str()).filter(|id| !NOT_CHAT.iter().any(|x| id.contains(x))).map(String::from).collect();
+    models.sort();
+    if models.is_empty() { Err("OpenAI returned no chat models".into()) } else { Ok(models) }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Description {

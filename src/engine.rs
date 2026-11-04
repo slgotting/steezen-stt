@@ -128,6 +128,7 @@ pub struct Shared {
     pub jobs: AtomicUsize,
     pub notice: Mutex<Option<(String, bool)>>,
     pub models: Mutex<HashMap<Provider, Result<Vec<String>, String>>>,
+    pub format_models: Mutex<formatter::ModelList>,
     pub download: Mutex<Option<(String, u64, u64)>>,
     pub ctx: OnceLock<eframe::egui::Context>,
     pub http: reqwest::blocking::Client,
@@ -174,6 +175,7 @@ impl Shared {
             jobs: AtomicUsize::new(0),
             notice: Mutex::new(None),
             models: Mutex::new(HashMap::new()),
+            format_models: Mutex::new(formatter::ModelList::load()),
             download: Mutex::new(None),
             ctx: OnceLock::new(),
             http: steezen_core::http::client(),
@@ -232,6 +234,38 @@ impl Shared {
         if let Ok(bytes) = serde_json::to_vec(&*history) {
             let _ = write_private(&history_path(), &bytes);
         }
+    }
+
+    pub fn refresh_format_models(&self) -> bool {
+        let result = formatter::list_models(&self.settings().api_key(Provider::OpenAI), &self.http);
+        let ok = result.is_ok();
+        {
+            let mut list = self.format_models.lock().unwrap();
+            match result {
+                Ok(models) => {
+                    *list = formatter::ModelList { fetched: chrono::Utc::now().timestamp(), models, error: None };
+                    list.save();
+                }
+                Err(e) => list.error = Some(e),
+            }
+        }
+        self.repaint();
+        ok
+    }
+
+    pub fn watch_format_models(self: &Arc<Self>) {
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let now = || chrono::Utc::now().timestamp();
+            let day = || 20 * 3600 + i64::from(chrono::Utc::now().timestamp_subsec_nanos()) % (8 * 3600);
+            let mut due = shared.format_models.lock().unwrap().fetched + day();
+            loop {
+                if now() >= due {
+                    due = now() + if shared.refresh_format_models() { day() } else { 3600 };
+                }
+                std::thread::sleep(std::time::Duration::from_secs((due - now()).clamp(60, 3600) as u64));
+            }
+        });
     }
 
     pub fn refresh_models(self: &Arc<Self>, provider: Provider) {

@@ -151,6 +151,7 @@ impl App {
         for p in Provider::ALL {
             shared.refresh_models(p);
         }
+        shared.watch_format_models();
         if draft.corrector_enabled && !draft.typesafe_key().is_empty() {
             shared.check_key(draft.typesafe_key(), draft.corrector_model.clone(), false);
         }
@@ -1021,7 +1022,25 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.label("OpenAI model");
-            ui.add(egui::TextEdit::singleline(&mut self.draft.format_model).desired_width(200.0));
+            let (mut models, error) = {
+                let list = self.shared.format_models.lock().unwrap();
+                (list.models.clone(), list.error.clone())
+            };
+            models.push(self.draft.format_model.clone());
+            models.sort();
+            models.dedup();
+            egui::ComboBox::from_id_salt("format_model").selected_text(self.draft.format_model.as_str()).width(220.0).height(480.0).show_ui(ui, |ui| {
+                for m in &models {
+                    ui.selectable_value(&mut self.draft.format_model, m.clone(), m.as_str());
+                }
+            });
+            if ui.button("⟳ Refresh list").clicked() {
+                let shared = self.shared.clone();
+                std::thread::spawn(move || shared.refresh_format_models());
+            }
+            if let Some(e) = error {
+                ui.label(RichText::new(format!("Couldn't fetch models: {e}")).color(MUTED).small());
+            }
         });
         ui.horizontal(|ui| {
             ui.label("Instructions (system prompt)");
