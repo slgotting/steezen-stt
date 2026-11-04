@@ -34,8 +34,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -237,8 +239,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
             if (!matches(f[0], f[3], f[4])) continue;
             if (!f[0].equals(section)) {
                 section = f[0];
-                list.addView(header(section));
-                c = card();
+                c = section(section, section, false);
             }
             c.addView(field(f));
         }
@@ -247,11 +248,38 @@ public class MainActivity extends Activity implements Dictation.Listener {
         if (list.getChildCount() == 0) list.addView(text("Nothing matches \"" + search.getText() + "\".", 14, R.color.muted));
     }
 
-    private TextView header(String s) {
-        TextView t = text(s, 13, R.color.muted);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setPadding(0, px(14), 0, 0);
-        return t;
+    private SharedPreferences prefs() {
+        return getSharedPreferences("ui", MODE_PRIVATE);
+    }
+
+    private LinearLayout section(String id, String title, boolean forceOpen) {
+        LinearLayout c = card();
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, px(4), 0, px(4));
+        TextView name = text(title, 15, R.color.text);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView chevron = text("", 22, R.color.muted);
+        head.addView(chevron);
+        c.addView(head);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        c.addView(body);
+        boolean open = forceOpen || !query().isEmpty() || prefs().getStringSet("open", Set.of()).contains(id);
+        Runnable show = () -> chevron.setText(body.getVisibility() == View.VISIBLE ? "▾" : "▸");
+        body.setVisibility(open ? View.VISIBLE : View.GONE);
+        show.run();
+        head.setOnClickListener(v -> {
+            boolean now = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(now ? View.VISIBLE : View.GONE);
+            show.run();
+            Set<String> ids = new HashSet<>(prefs().getStringSet("open", Set.of()));
+            if (now) ids.add(id);
+            else ids.remove(id);
+            prefs().edit().putStringSet("open", ids).apply();
+        });
+        return body;
     }
 
     private View field(String[] f) {
@@ -339,7 +367,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
         }), gap);
         row.addView(button("Stop showing tips", false, v -> {
             prefs.edit().putBoolean("tips", false).apply();
-            Toast.makeText(this, "Tips are off. Turn them back on under General → Show tips.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Tips are off. Turn them back on under Export & import → Show tips.", Toast.LENGTH_LONG).show();
             rebuild();
         }));
         c.addView(row);
@@ -369,8 +397,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
         List<Object[]> todo = new ArrayList<>();
         for (Object[] s : steps) if (!(Boolean) s[1] && matches("setup", (String) s[0])) todo.add(s);
         if (todo.isEmpty()) return;
-        list.addView(header("Setup"));
-        LinearLayout c = card();
+        LinearLayout c = section("Setup", "Setup", true);
         for (Object[] s : todo) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -384,8 +411,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
 
     @SuppressWarnings("ClickableViewAccessibility")
     private void tester() {
-        list.addView(header("Try it"));
-        LinearLayout c = card();
+        LinearLayout c = section("Try it", "Try it", false);
         Button hold = button("Hold to dictate here", true, null);
         hold.setOnTouchListener((v, e) -> {
             if (e.getAction() == MotionEvent.ACTION_DOWN) Dictation.start(this, "Dictate", false);
@@ -416,8 +442,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
         }
         boolean addMatches = matches("dictionary add word");
         if (shown.isEmpty() && !addMatches) return;
-        list.addView(header("Dictionary words (" + rules.length() + ")"));
-        LinearLayout c = card();
+        LinearLayout c = section("Dictionary words", "Dictionary words (" + rules.length() + ")", false);
         for (int i : shown) {
             JSONObject r = rules.optJSONObject(i);
             LinearLayout row = new LinearLayout(this);
@@ -480,8 +505,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
 
     private void backup() {
         if (!matches("export import backup settings file share email phone desktop show tips general")) return;
-        list.addView(header("Export & import"));
-        LinearLayout c = card();
+        LinearLayout c = section("Export & import", "Export & import", false);
         c.addView(text("Move settings between this phone and the desktop app. API keys only travel in a file locked with a passphrase.", 13, R.color.muted));
         LinearLayout row = new LinearLayout(this);
         row.setPadding(0, px(8), 0, 0);
