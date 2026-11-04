@@ -1,4 +1,4 @@
-- [ ] Install the Android app on your phone
+- [x] Install the Android app on your phone
   Needed: the steezen-stt APK on the phone, plus three one-time permissions only you can grant.
   Why: Android only lets the owner of the phone enable accessibility services and pick the default assistant; the app cannot do it itself.
   Steps:
@@ -8,6 +8,16 @@
        - Accessibility service: if Android says "restricted setting", open App info, tap ⋮ → Allow restricted settings, then turn on "steezen-stt push-to-talk".
        - Default digital assistant: pick steezen-stt (and turn on "Hold power button for assistant" if your phone has that option).
     3. On the desktop: Settings → Export & import, tick API keys, set a passphrase, Export, and email the file to yourself. Open the attachment on the phone and enter the passphrase.
+  Status: steps 1-2 done over USB on 2026-11-04 (installed, mic + notifications granted, accessibility on, steezen-stt is the default assistant). Moved step 3 and the power-button check to their own items below.
+
+- [ ] Make long-press power open the assistant
+  Needed: Settings → System → Gestures → Press and hold power button → Digital assistant.
+  Why: steezen-stt is now the default assistant, but Moto phones can map the power long-press to the power menu instead, and only the phone's own settings screen changes that.
+  Status: open
+
+- [ ] Import your desktop settings on the phone
+  Needed: on the desktop, Settings → Export & import, tick the groups you want (API keys too), set a passphrase, Export, email the file to yourself; open the attachment on the phone and enter the passphrase.
+  Why: the phone has no API key yet, so dictation can't transcribe until it does.
   Status: open
 
 - [ ] Paste your Zen inbox token into the phone app
