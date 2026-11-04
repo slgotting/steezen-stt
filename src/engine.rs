@@ -176,7 +176,7 @@ impl Shared {
             models: Mutex::new(HashMap::new()),
             download: Mutex::new(None),
             ctx: OnceLock::new(),
-            http: reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(10)).build().unwrap_or_default(),
+            http: steezen_core::http::client(),
             local: Arc::new(LocalEngine::default()),
             latency: Arc::new(Latency::load()),
             output: Output::new(),

@@ -3,25 +3,22 @@
 mod audio;
 mod autostart;
 mod cli;
-mod corrector;
 mod engine;
-mod formatter;
 mod hooks;
 mod hotkeys;
 mod instance;
-mod latency;
 mod output;
-mod settings;
 mod theme;
-mod transcribe;
 mod tray;
 mod ui;
+
+pub use steezen_core::{bundle, corrector, formatter, latency, settings, transcribe};
 
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
     #[cfg(feature = "local")]
-    whisper_rs::install_logging_hooks();
+    steezen_core::install_logging_hooks();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "transcribe") {
         std::process::exit(cli::transcribe(&args[1..]));

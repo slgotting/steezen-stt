@@ -1,3 +1,4 @@
+use crate::bundle;
 use crate::corrector;
 use crate::formatter::{self, Description};
 use crate::engine::{Cmd, Entry, KeyCheck, Phase, Shared, Step, StepState, fmt_ms, hello_path, recordings_dir};
@@ -32,12 +33,13 @@ enum Section {
     Formatting,
     Scripts,
     Feedback,
+    Backup,
     General,
 }
 
 const PAGES: [(Page, &str); 4] = [(Page::Home, "Home"), (Page::History, "History"), (Page::Stats, "Stats"), (Page::Settings, "Settings")];
 
-const SECTIONS: [(Section, &str, &str); 9] = [
+const SECTIONS: [(Section, &str, &str); 10] = [
     (Section::Transcription, "Transcription", "Where your audio goes and which model turns it into text."),
     (Section::Recording, "Recording", "Microphone and recording behaviour."),
     (Section::Shortcuts, "Shortcuts", "Global keys, e.g. Alt+Shift+D, Ctrl+Space or F9. Click Record and press the combination."),
@@ -46,6 +48,7 @@ const SECTIONS: [(Section, &str, &str); 9] = [
     (Section::Formatting, "AI formatting", "Turns a rambling dictation into tidy Markdown with a cheap OpenAI model. It runs after the dictionary and before your scripts, only when you ask for it."),
     (Section::Scripts, "Post-processing", "Your own scripts, as many as you like. Order: transcribe → built-in Jev dictionary → AI formatting (when asked) → your text filters, top to bottom → output → after-delivery scripts."),
     (Section::Feedback, "Sounds & notifications", "Audible and desktop feedback. Everything except the fallback warning is off by default."),
+    (Section::Backup, "Export & import", "Move settings between this computer and your phone: export the groups you pick to one file, email it to yourself, and import it on the other side. API keys only travel locked with a passphrase."),
     (Section::General, "General", "Window, tray and history."),
 ];
 
@@ -102,6 +105,36 @@ pub struct App {
     generating: Arc<Mutex<std::collections::HashMap<usize, (String, Option<Result<Description, String>>)>>>,
     hello_rec: Option<crate::audio::Recording>,
     baseline_edit: Option<(u64, f64)>,
+    backup: Backup,
+}
+
+struct Backup {
+    export: std::collections::HashMap<&'static str, bool>,
+    export_pass: String,
+    export_path: String,
+    import_path: String,
+    import_pass: String,
+    opened: Option<serde_json::Map<String, serde_json::Value>>,
+    choices: std::collections::HashMap<String, bool>,
+    merge_dictionary: bool,
+    status: Option<(String, bool)>,
+}
+
+impl Default for Backup {
+    fn default() -> Self {
+        let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
+        Self {
+            export: bundle::GROUPS.iter().map(|g| (g.id, !g.secret)).collect(),
+            export_pass: String::new(),
+            export_path: dir.join(format!("steezen-stt-settings.{}", bundle::EXTENSION)).display().to_string(),
+            import_path: String::new(),
+            import_pass: String::new(),
+            opened: None,
+            choices: Default::default(),
+            merge_dictionary: true,
+            status: None,
+        }
+    }
 }
 
 impl App {
@@ -141,6 +174,7 @@ impl App {
             key_input: String::new(),
             script_tests: Arc::default(),
             generating: Arc::default(),
+            backup: Backup::default(),
             shared,
         };
         app.apply_autostart();
@@ -620,6 +654,7 @@ impl App {
                 Section::Formatting => self.format_settings(ui),
                 Section::Scripts => self.script_settings(ui),
                 Section::Feedback => toggles(ui, &mut self.draft, &FEEDBACK_TOGGLES),
+                Section::Backup => self.backup_settings(ui),
                 Section::General => self.general_settings(ui),
             });
             ui.add_space(24.0);
@@ -1064,6 +1099,96 @@ impl App {
         }
         if ui.button("➕ Add script").clicked() {
             self.draft.scripts.push(Script { enabled: true, name: format!("Script {}", count + 1), command: String::new(), stage: Stage::AfterTranscription });
+        }
+    }
+
+    fn backup_settings(&mut self, ui: &mut Ui) {
+        if let Some(path) = ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).find(|p| !p.as_os_str().is_empty())) {
+            self.backup.import_path = path.display().to_string();
+            self.open_bundle();
+        }
+        let b = &mut self.backup;
+        ui.label(bold("Export", 15.0));
+        for g in bundle::GROUPS {
+            ui.checkbox(b.export.entry(g.id).or_default(), g.label);
+        }
+        let secret = bundle::GROUPS.iter().any(|g| g.secret && b.export[g.id]);
+        ui.horizontal(|ui| {
+            ui.label("Passphrase");
+            ui.add(egui::TextEdit::singleline(&mut b.export_pass).password(true).desired_width(220.0).hint_text(if secret { "required for API keys" } else { "optional: locks the whole file" }));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Save to");
+            ui.add(egui::TextEdit::singleline(&mut b.export_path).desired_width(420.0));
+        });
+        if ui.button("Export").clicked() {
+            let groups: Vec<&str> = bundle::GROUPS.iter().filter(|g| b.export[g.id]).map(|g| g.id).collect();
+            let pass = Some(b.export_pass.as_str()).filter(|p| !p.trim().is_empty());
+            let path = std::path::PathBuf::from(b.export_path.trim());
+            b.status = Some(match bundle::export(&self.draft, &groups, pass).and_then(|text| crate::settings::write_private(&path, text.as_bytes()).map_err(|e| e.to_string())) {
+                Ok(()) => (format!("Saved {}. Email or share it to your phone and import it there.", path.display()), false),
+                Err(e) => (format!("Couldn't export: {e}"), true),
+            });
+            if !b.status.as_ref().unwrap().1 {
+                reveal(path.parent().unwrap_or(&path));
+            }
+        }
+        ui.separator();
+        ui.label(bold("Import", 15.0));
+        ui.label(muted("Drop a settings file on this window, or type its path."));
+        ui.horizontal(|ui| {
+            ui.label("File");
+            ui.add(egui::TextEdit::singleline(&mut b.import_path).desired_width(420.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Passphrase");
+            ui.add(egui::TextEdit::singleline(&mut b.import_pass).password(true).desired_width(220.0).hint_text("only for a locked file"));
+        });
+        let open = ui.button("Open").clicked();
+        if let Some(opened) = &b.opened {
+            ui.label(muted("Pick what to apply. Everything else stays as it is."));
+            for g in bundle::GROUPS.iter().filter(|g| opened.contains_key(g.id)) {
+                ui.checkbox(b.choices.entry(g.id.into()).or_insert(true), g.label);
+            }
+            if opened.contains_key("dictionary") {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut b.merge_dictionary, true, "Merge dictionary (add new words, update matching ones)");
+                    ui.radio_value(&mut b.merge_dictionary, false, "Replace dictionary");
+                });
+            }
+            if ui.button("Apply").clicked() {
+                let choices: Vec<(&str, bool)> = b.choices.iter().filter(|(_, on)| **on).map(|(id, _)| (id.as_str(), id == "dictionary" && b.merge_dictionary)).collect();
+                b.status = Some(match bundle::apply(&self.draft, opened, &choices) {
+                    Ok(next) => {
+                        self.draft = next;
+                        (format!("Applied {} group(s).", choices.len()), false)
+                    }
+                    Err(e) => (format!("Couldn't import: {e}"), true),
+                });
+            }
+        }
+        if let Some((text, error)) = &self.backup.status {
+            ui.label(RichText::new(text).color(if *error { RED } else { GREEN }));
+        }
+        if open {
+            self.open_bundle();
+        }
+    }
+
+    fn open_bundle(&mut self) {
+        let b = &mut self.backup;
+        let pass = Some(b.import_pass.as_str()).filter(|p| !p.trim().is_empty());
+        let result = std::fs::read_to_string(b.import_path.trim()).map_err(|e| e.to_string()).and_then(|text| bundle::open(&text, pass));
+        b.choices.clear();
+        match result {
+            Ok(opened) => {
+                b.status = Some((format!("Found {} group(s).", opened.len()), false));
+                b.opened = Some(opened);
+            }
+            Err(e) => {
+                b.status = Some((format!("Couldn't open: {e}"), true));
+                b.opened = None;
+            }
         }
     }
 

@@ -56,6 +56,17 @@ pub enum PasteMethod {
     Type,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum PhoneAction {
+    Off,
+    Dictate,
+    Zen,
+}
+
+impl PhoneAction {
+    pub const ALL: [PhoneAction; 3] = [PhoneAction::Off, PhoneAction::Dictate, PhoneAction::Zen];
+}
+
 impl PasteMethod {
     pub const ALL: [PasteMethod; 4] = [PasteMethod::CtrlV, PasteMethod::CtrlShiftV, PasteMethod::ShiftInsert, PasteMethod::Type];
 
@@ -230,6 +241,11 @@ pub struct Settings {
     pub close_to_tray: bool,
     pub start_hidden: bool,
     pub start_at_login: bool,
+
+    pub zen_url: String,
+    pub zen_token: String,
+    pub volume_action: PhoneAction,
+    pub assistant_action: PhoneAction,
 }
 
 impl Default for Settings {
@@ -276,7 +292,7 @@ impl Default for Settings {
             format_always: false,
             format_model: "gpt-4.1-mini".into(),
             format_prompt: crate::formatter::DEFAULT_PROMPT.into(),
-            dictionary: serde_json::from_str(include_str!("../assets/default_dictionary.json")).unwrap_or_default(),
+            dictionary: serde_json::from_str(include_str!("../../assets/default_dictionary.json")).unwrap_or_default(),
             scripts: Vec::new(),
             script_timeout_secs: 10,
             history_limit: 200,
@@ -284,6 +300,10 @@ impl Default for Settings {
             close_to_tray: true,
             start_hidden: false,
             start_at_login: true,
+            zen_url: "https://zen.steezen.com".into(),
+            zen_token: String::new(),
+            volume_action: PhoneAction::Dictate,
+            assistant_action: PhoneAction::Zen,
         }
     }
 }
@@ -343,16 +363,26 @@ fn non_empty_or_env(stored: &str, env: &str) -> String {
     if stored.is_empty() { std::env::var(env).unwrap_or_default().trim().to_string() } else { stored.to_string() }
 }
 
+static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_root(path: PathBuf) {
+    let _ = ROOT.set(path);
+}
+
+fn base(system: fn() -> Option<PathBuf>) -> PathBuf {
+    ROOT.get().cloned().unwrap_or_else(|| system().unwrap_or_else(std::env::temp_dir).join(APP_NAME))
+}
+
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join(APP_NAME)
+    base(dirs::config_dir)
 }
 
 pub fn data_dir() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(std::env::temp_dir).join(APP_NAME)
+    base(dirs::data_dir)
 }
 
 pub fn cache_dir() -> PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join(APP_NAME)
+    base(dirs::cache_dir)
 }
 
 fn config_path() -> PathBuf {

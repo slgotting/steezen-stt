@@ -1,20 +1,23 @@
+[workspace]
+members = [".", "core", "android/rust"]
+
 [package]
 name = "steezen-stt"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [features]
 default = ["local"]
-local = ["dep:whisper-rs"]
-cuda = ["local", "whisper-rs/cuda"]
-vulkan = ["local", "whisper-rs/vulkan"]
+local = ["steezen-core/local"]
+cuda = ["local", "steezen-core/cuda"]
+vulkan = ["local", "steezen-core/vulkan"]
 
 [dependencies]
 eframe = { version = "=0.36.1", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 tray-icon = "=0.24.2"
 global-hotkey = "=0.8.0"
 cpal = "=0.18.2"
-whisper-rs = { version = "=0.16.0", optional = true }
+steezen-core = { path = "core", default-features = false }
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "json", "multipart", "native-tls"] }
 arboard = "=3.6.1"
 enigo = "=0.6.1"

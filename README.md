@@ -9,6 +9,10 @@ hotkey → record → [before scripts] → transcribe (OpenAI / Groq / local whi
 
 Native Rust (egui), one binary. Uses about 40 MB of private memory when idle and no measurable CPU. A local model adds its own size while loaded and is unloaded after a configurable idle time.
 
+## Layout
+
+A Cargo workspace: `core/` is the shared library (settings, cloud and local transcription, Jev dictionary, formatting, latency, settings export/import), the root crate is the desktop app, and `android/` is the Android app with its JNI bridge in `android/rust/`.
+
 ## Build
 
 ```sh
@@ -98,6 +102,10 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 
 `$WH_STAGE` names the stage. Commands run with `sh -c` (Linux) or `cmd /C` (Windows). The standalone Python corrector also works as a filter:
 `python3 ~/projects/speech/transcript-corrector/transcript_corrector.py`
+
+### Export & import settings
+
+Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. The phone app reads and writes the same file.
 
 ## Data
 

@@ -1,4 +1,4 @@
-use crate::audio::{WHISPER_RATE, wav_bytes};
+use crate::wav::{WHISPER_RATE, wav_bytes};
 use crate::latency::{self, Latency, Recorded};
 use crate::settings::{Provider, Settings, data_dir};
 use reqwest::blocking::Client;
@@ -90,7 +90,7 @@ pub fn local_model_info(name: &str) -> Option<LocalModelInfo> {
 }
 
 fn untimed_client() -> Result<Client, String> {
-    Client::builder().connect_timeout(Duration::from_secs(10)).timeout(None).build().map_err(|e| e.to_string())
+    crate::http::builder().connect_timeout(Duration::from_secs(10)).timeout(None).build().map_err(|e| e.to_string())
 }
 
 pub fn download_model(name: &str, progress: &Mutex<Option<(String, u64, u64)>>) -> Result<(), String> {
@@ -541,8 +541,8 @@ mod tests {
     #[test]
     #[ignore = "needs WH_TEST_WAV and a downloaded model"]
     fn local_transcribes_wav() {
-        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
-        let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
+        let (samples, rate) = crate::wav::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let samples = crate::wav::resample(&samples, rate, WHISPER_RATE);
         let settings = Settings { provider: Provider::Local, local_model: std::env::var("WH_TEST_MODEL").unwrap(), ..Settings::default() };
         let text = transcribe(&samples, &settings, &LocalEngine::default()).unwrap();
         println!("TRANSCRIPT: {text}");
@@ -552,8 +552,8 @@ mod tests {
     #[test]
     #[ignore = "needs WH_TEST_WAV and a downloaded model"]
     fn local_survives_a_dirty_heap() {
-        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
-        let samples = crate::audio::resample(&samples, rate, WHISPER_RATE);
+        let (samples, rate) = crate::wav::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let samples = crate::wav::resample(&samples, rate, WHISPER_RATE);
         let settings = Settings { provider: Provider::Local, local_model: std::env::var("WH_TEST_MODEL").unwrap(), ..Settings::default() };
         let engine = LocalEngine::default();
         for _ in 0..3 {
@@ -565,8 +565,8 @@ mod tests {
     #[test]
     #[ignore = "needs WH_TEST_WAV and a downloaded model"]
     fn falls_back_to_local_when_cloud_fails() {
-        let (samples, rate) = crate::audio::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
-        let samples: Arc<[f32]> = crate::audio::resample(&samples, rate, WHISPER_RATE).into();
+        let (samples, rate) = crate::wav::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let samples: Arc<[f32]> = crate::wav::resample(&samples, rate, WHISPER_RATE).into();
         let model = std::env::var("WH_TEST_MODEL").unwrap();
         let settings = Settings { provider: Provider::OpenAI, openai_api_key: String::new(), local_fallback: vec!["ggml-missing.bin".into(), model.clone()], ..Settings::default() };
         let remote = vec![settings.clone()];
