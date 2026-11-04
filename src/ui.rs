@@ -89,6 +89,7 @@ pub struct App {
     draft: Settings,
     dirty_since: Option<Instant>,
     hide_on_start: bool,
+    format_filter: String,
     autostart: crate::autostart::Status,
     page: Page,
     section: Section,
@@ -156,6 +157,7 @@ impl App {
             shared.check_key(draft.typesafe_key(), draft.corrector_model.clone(), false);
         }
         let mut app = Self {
+            format_filter: String::new(),
             hide_on_start: draft.start_hidden || crate::autostart::launched_hidden(),
             autostart: Default::default(),
             draft,
@@ -1030,7 +1032,9 @@ impl App {
             models.sort();
             models.dedup();
             egui::ComboBox::from_id_salt("format_model").selected_text(self.draft.format_model.as_str()).width(220.0).height(480.0).show_ui(ui, |ui| {
-                for m in &models {
+                ui.add(egui::TextEdit::singleline(&mut self.format_filter).hint_text("Search models").desired_width(f32::INFINITY)).request_focus();
+                let needle = self.format_filter.to_lowercase();
+                for m in models.iter().filter(|m| m.to_lowercase().contains(&needle)) {
                     ui.selectable_value(&mut self.draft.format_model, m.clone(), m.as_str());
                 }
             });
