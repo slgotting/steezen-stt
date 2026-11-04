@@ -107,6 +107,24 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 
 Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. The phone app reads and writes the same file.
 
+## Android
+
+`android/` is the phone app. It runs the same core (cloud transcription with your own key, the Jev dictionary, formatting) through a small JNI bridge, so audio goes straight from the phone to OpenAI or Groq.
+
+- **Hold volume-down** in any app: records while held, then pastes the transcript into the focused text box (and presses Enter if that is on). A short press still changes the volume. Needs the *steezen-stt push-to-talk* accessibility service.
+- **Long-press power** (with steezen-stt as the default digital assistant): records until you pause or tap Send.
+- Each gesture can be set to **Dictate**, **Zen** (uploads the recording to your Zen inbox at `/api/capture` with your inbox token, and Zen transcribes and routes it) or **Off**.
+- Settings has a search box, a hold-to-dictate test button, a dictionary editor, and the same Export & import as the desktop: Share… sends the file by email or Drive, and opening a `.steezen.json` attachment imports it.
+
+Build and install (needs the Android SDK and NDK 29, `cargo install cargo-ndk`, and the Android Rust targets):
+
+```sh
+scripts/android.sh          # build android/app/build/outputs/apk/release/app-release.apk
+scripts/android.sh install  # also adb install it on the connected phone
+```
+
+The APK is signed with the local debug key, for sideloading. Its version follows the root `Cargo.toml`.
+
 ## Data
 
 - Settings: `~/.config/steezen-stt/settings.json`

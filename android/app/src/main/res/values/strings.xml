@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="key_service_description">Hold volume-down to dictate, and paste the transcript into the text box you are typing in (and press Enter when you turn that on). It reads only the focused text box, and only to paste into it.</string>
+</resources>

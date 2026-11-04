@@ -1,0 +1,16 @@
+- [ ] Install the Android app on your phone
+  Needed: the steezen-stt APK on the phone, plus three one-time permissions only you can grant.
+  Why: Android only lets the owner of the phone enable accessibility services and pick the default assistant; the app cannot do it itself.
+  Steps:
+    1. Plug the phone in with USB debugging on and run `scripts/android.sh install` (or copy android/app/build/outputs/apk/release/app-release.apk to the phone and open it, allowing installs from that source).
+    2. Open steezen-stt and press each button under Setup:
+       - Microphone: Grant.
+       - Accessibility service: if Android says "restricted setting", open App info, tap ⋮ → Allow restricted settings, then turn on "steezen-stt push-to-talk".
+       - Default digital assistant: pick steezen-stt (and turn on "Hold power button for assistant" if your phone has that option).
+    3. On the desktop: Settings → Export & import, tick API keys, set a passphrase, Export, and email the file to yourself. Open the attachment on the phone and enter the passphrase.
+  Status: open
+
+- [ ] Paste your Zen inbox token into the phone app
+  Needed: Zen → Tools → inbox token (Generate one if it is empty), pasted into steezen-stt → Zen → Zen inbox token.
+  Why: the long-press-power gesture uploads recordings to zen.steezen.com/api/capture, which rejects requests without the token once one is set. The desktop app has no field for it, so it was not in the export.
+  Status: open

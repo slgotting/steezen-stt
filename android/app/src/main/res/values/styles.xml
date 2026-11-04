@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#0E1016</color>
+    <color name="bar">#12151D</color>
+    <color name="surface">#181C26</color>
+    <color name="raised">#222734</color>
+    <color name="input">#0B0D12</color>
+    <color name="border">#2A3040</color>
+    <color name="text">#E4E7F0</color>
+    <color name="muted">#8C92A4</color>
+    <color name="accent">#7C6CF6</color>
+    <color name="accent_hi">#9A8CFF</color>
+    <color name="red">#F2545B</color>
+    <color name="amber">#F5A524</color>
+    <color name="green">#3DD68C</color>
+    <style name="Theme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="android:colorPrimary">@color/accent</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:statusBarColor">@color/bar</item>
+        <item name="android:navigationBarColor">@color/bar</item>
+    </style>
+    <style name="Dialog" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:colorAccent">@color/accent_hi</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:colorControlActivated">@color/accent</item>
+    </style>
+    <style name="Panel" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+    </style>
+</resources>

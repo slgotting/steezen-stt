@@ -191,3 +191,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn dictate_with_real_settings() {
+        let (pcm, rate) = wav::read_wav(&std::fs::read(std::env::var("WH_TEST_WAV").unwrap()).unwrap()).unwrap();
+        let pcm: Vec<u8> = wav::resample(&pcm, rate, wav::WHISPER_RATE).iter().flat_map(|s| ((s * i16::MAX as f32) as i16).to_le_bytes()).collect();
+        println!("{}", call("dictate", "{}", &pcm));
+    }
+}
