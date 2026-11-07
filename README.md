@@ -105,7 +105,7 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 
 ### Export & import settings
 
-Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. The phone app reads and writes the same file.
+Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, phone assistant, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. The phone app reads and writes the same file.
 
 ## Android
 
@@ -113,7 +113,21 @@ Settings → Export & import writes the groups you tick (dictionary, services & 
 
 - **Hold volume-down** in any app: records while held, then pastes the transcript into the focused text box (and presses Enter if that is on). A short press still changes the volume. Needs the *steezen-stt push-to-talk* accessibility service.
 - **Long-press power** (with steezen-stt as the default digital assistant): records until you pause or tap Send.
-- Each gesture can be set to **Dictate**, **Zen** (uploads the recording to your Zen inbox at `/api/capture` with your inbox token, and Zen transcribes and routes it) or **Off**.
+- **Earbud assist button** (long-press on most Bluetooth earbuds): Android sends it as a voice-command intent, which steezen-stt handles. Settings → Gestures shows whether this phone routes it to steezen-stt or to another app. For earbuds that only send play/pause, an optional fallback keeps a media session that turns a long press into the gesture and passes short presses on to your music app (needs notification access); it works until another app plays media.
+- Each gesture can be set to **Dictate**, **Zen** (uploads the recording to your Zen inbox at `/api/capture` with your inbox token, and Zen transcribes and routes it), **Assistant** or **Off**.
+
+### Assistant (Zen phone control)
+
+Assistant mode transcribes your request and has Claude operate the phone. It calls the Anthropic API directly from the phone with your own key (Claude Opus 5.5 at low effort by default, with server-side refusal fallback on), so screen steps don't go through a server. Notes, ideas and long tasks go to Zen with `send_to_zen`.
+
+- **A separate service.** The agent is a second accessibility service, *Zen phone control*, in its own process (`:agent`). Push-to-talk is unaffected if it is off or crashes. The agent loop runs under a crash guard, and it pauses itself after 3 errors in 10 minutes.
+- **What it can do:** read the screen (numbered elements), tap, long-press, type, scroll, swipe, Back/Home/Recents/notifications, open apps and links, look up contacts, call, text, set alarms, timers and reminders, read and add calendar events, read notifications, take screenshots (off by default), and send to Zen. Each one is a toggle under *Assistant permissions*, and an Android permission is only asked for when you turn on the toggle that needs it.
+- **Confirmation sheet** before calls, texts, anything that sends or shares, pays or buys, deletes or removes, any tap in Settings or a payment or banking app, and before everything when *Confirm every action* is on. The phone decides this from what is being tapped, not the model. If you decline, the action is not retried another way.
+- **Safety:** it never acts while the phone is locked and stops when the screen turns off. A Stop button stays at the top of the screen and in the notification while it works. It can't read or type password fields, can't act on steezen-stt itself, and only opens https, geo, mailto and market links. Screen text, notifications and messages are passed to Claude as untrusted data, with instructions never to follow text found there. Card numbers are hidden before anything is sent.
+- **Privacy:** only your request and what the current request reads leave the phone, and only to Anthropic. Nothing from the screen is stored. The action log keeps request text, tool names and targets (message text only as a length). It can be turned off and cleared under *Assistant action log*.
+- Answers show in a card, and are read aloud when earbuds or headphones are connected. If it asks a question, tap Answer within 2 minutes to continue the same conversation.
+- Setup lists what is still missing: the Zen phone control service, the Anthropic key, notification access, the battery-optimisation exemption, and exact alarms for reminders. Each step explains Android 13+ "restricted setting" (App info → ⋮ → Allow restricted settings), which sideloaded apps hit for accessibility and notification access.
+- Settings, including the assistant's model, permissions and the Anthropic key, live in the same shared settings file and travel in Export & import. An empty key in an imported file never wipes a key already set.
 - Settings has a search box, a hold-to-dictate test button, a dictionary editor, and the same Export & import as the desktop: Share… sends the file by email or Drive, and opening a `.steezen.json` attachment imports it.
 
 Build and install (needs the Android SDK and NDK 29, `cargo install cargo-ndk`, and the Android Rust targets):

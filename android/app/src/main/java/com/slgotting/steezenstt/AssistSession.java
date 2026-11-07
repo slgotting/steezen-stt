@@ -98,9 +98,14 @@ public class AssistSession extends VoiceInteractionSession implements Dictation.
     public void onShow(Bundle args, int flags) {
         super.onShow(args, flags);
         Dictation.listeners.add(this);
-        String action = Core.settings().optString("assistant_action", Dictation.ZEN);
+        String action = args != null && args.getString("action") != null ? args.getString("action") : Core.settings().optString("assistant_action", Dictation.ZEN);
         if ("Off".equals(action)) {
             status.setText("The assistant gesture is off. Turn it on in steezen-stt → Gestures.");
+            return;
+        }
+        String problem = Dictation.ASSISTANT.equals(action) ? AgentBridge.problem(getContext()) : null;
+        if (problem != null) {
+            status.setText(problem);
             return;
         }
         mine = Dictation.start(getContext(), action, true);

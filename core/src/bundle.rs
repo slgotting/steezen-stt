@@ -35,8 +35,18 @@ pub const GROUPS: &[Group] = &[
         secret: false,
         desktop_only: false,
     },
-    Group { id: "phone", label: "Phone (Zen address, gestures)", fields: &["zen_url", "volume_action", "assistant_action"], secret: false, desktop_only: false },
-    Group { id: "keys", label: "API keys and Zen token", fields: &["openai_api_key", "groq_api_key", "typesafe_api_key", "zen_token"], secret: true, desktop_only: false },
+    Group { id: "phone", label: "Phone (Zen address, gestures)", fields: &["zen_url", "volume_action", "assistant_action", "earbud_action", "earbud_media_session"], secret: false, desktop_only: false },
+    Group {
+        id: "assistant",
+        label: "Phone assistant (model, permissions, log)",
+        fields: &[
+            "agent_model", "agent_effort", "agent_max_steps", "agent_confirm_all", "agent_speak", "agent_log", "agent_allow_screen", "agent_allow_gestures", "agent_allow_apps", "agent_allow_screenshots",
+            "agent_allow_calls", "agent_allow_sms", "agent_allow_contacts", "agent_allow_calendar", "agent_allow_alarms", "agent_allow_notifications", "agent_allow_zen",
+        ],
+        secret: false,
+        desktop_only: false,
+    },
+    Group { id: "keys", label: "API keys and Zen token", fields: &["openai_api_key", "groq_api_key", "typesafe_api_key", "anthropic_api_key", "zen_token"], secret: true, desktop_only: false },
     Group {
         id: "desktop",
         label: "Desktop (hotkeys, scripts, startup)",
@@ -131,7 +141,11 @@ pub fn apply(settings: &Settings, opened: &Map<String, Value>, choices: &[(&str,
     let mut all = serde_json::to_value(settings).map_err(|e| e.to_string())?;
     for (id, merge) in choices {
         let Some(Value::Object(fields)) = opened.get(*id) else { continue };
+        let secret = group(id).is_some_and(|g| g.secret);
         for (name, value) in fields {
+            if secret && value.as_str().is_some_and(|v| v.trim().is_empty()) {
+                continue;
+            }
             let value = match (name.as_str(), merge) {
                 ("dictionary", true) => serde_json::to_value(merge_dictionary(&settings.dictionary, serde_json::from_value(value.clone()).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?,
                 _ => value.clone(),
@@ -185,6 +199,15 @@ mod tests {
         assert_eq!(merged.dictionary.iter().map(|r| r.word.as_str()).collect::<Vec<_>>(), ["mine", "Zen"]);
         let replaced = apply(&mine, &opened, &[("dictionary", false)]).unwrap();
         assert_eq!(replaced.dictionary.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_key_in_a_file_never_wipes_a_key_already_set() {
+        let text = export(&Settings::default(), &["keys"], Some("pw")).unwrap();
+        let mut mine = Settings::default();
+        mine.anthropic_api_key = "sk-ant".into();
+        let out = apply(&mine, &open(&text, Some("pw")).unwrap(), &[("keys", false)]).unwrap();
+        assert_eq!(out.anthropic_api_key, "sk-ant");
     }
 
     #[test]

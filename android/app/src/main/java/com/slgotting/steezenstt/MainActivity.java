@@ -10,7 +10,9 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.app.AlarmManager;
 import android.net.Uri;
+import android.os.PowerManager;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.Editable;
@@ -37,6 +39,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -44,11 +47,39 @@ import org.json.JSONObject;
 public class MainActivity extends Activity implements Dictation.Listener {
     private static final int SAVE_FILE = 1;
     private static final int OPEN_FILE = 2;
-    private static final String ACTIONS = "Off,Dictate,Zen";
+    private static final String ACTIONS = "Off,Dictate,Zen,Assistant";
+    private static final Map<String, String[]> PERMS = Map.of(
+            "agent_allow_calls", new String[]{Manifest.permission.CALL_PHONE},
+            "agent_allow_sms", new String[]{Manifest.permission.SEND_SMS},
+            "agent_allow_contacts", new String[]{Manifest.permission.READ_CONTACTS},
+            "agent_allow_calendar", new String[]{Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR});
+    private static final String[] VOICE_INTENTS = {"android.intent.action.VOICE_COMMAND", "android.speech.action.VOICE_SEARCH_HANDS_FREE"};
 
     private static final String[][] FIELDS = {
             {"Gestures", "volume_action", "choice", "Hold volume-down", "Hold to record, release to finish. A short press still changes the volume. Dictate pastes where you are typing; Zen sends the recording to your Zen inbox.", ACTIONS},
             {"Gestures", "assistant_action", "choice", "Long-press power (assistant)", "Starts recording and stops after a pause, or tap Send. Needs steezen-stt set as the default digital assistant.", ACTIONS},
+            {"Gestures", "earbud_action", "choice", "Earbud assist button", "Long-press on most Bluetooth earbuds. Stops after a pause, like the power gesture.", ACTIONS},
+            {"Gestures", "earbud_check", "earbud", "Does the earbud button reach steezen-stt?", "", ""},
+            {"Gestures", "earbud_media_session", "bool", "Earbud fallback: catch a long press of play/pause", "For earbuds that only send play/pause. Works until another app plays media; short presses still go to your music app (needs notification access).", ""},
+            {"Assistant", "assistant_note", "note", "", "Assistant mode answers a spoken request by operating the phone with Claude. What leaves the phone: your request and, only while it runs, what the assistant reads (screen elements, notifications, contacts), sent straight to Anthropic with your key. Nothing from the screen is stored. It asks before sending, paying, deleting or changing settings, shows a Stop button the whole time, and never acts on the lock screen.", ""},
+            {"Assistant", "anthropic_api_key", "secret", "Anthropic API key", "console.anthropic.com → API keys.", ""},
+            {"Assistant", "agent_model", "choice", "Model", "Opus is the most careful; Haiku is the fastest and cheapest.", "@models"},
+            {"Assistant", "agent_effort", "choice", "Thinking effort", "Low keeps screen steps quick.", "@efforts"},
+            {"Assistant", "agent_max_steps", "int", "Most steps per request", "It stops and tells you when it runs out.", ""},
+            {"Assistant", "agent_confirm_all", "bool", "Confirm every action", "Otherwise it asks only before sending, paying, deleting or changing settings.", ""},
+            {"Assistant", "agent_speak", "bool", "Read answers aloud when earbuds or headphones are connected", "", ""},
+            {"Assistant", "agent_log", "bool", "Keep an action log", "Records what it did (tool names and targets), never screen content or message text.", ""},
+            {"Assistant permissions", "agent_allow_screen", "bool", "Read the screen", "Visible text and buttons, read only during a request. Password fields are never read.", ""},
+            {"Assistant permissions", "agent_allow_gestures", "bool", "Tap, type, scroll and press Back/Home", "", ""},
+            {"Assistant permissions", "agent_allow_screenshots", "bool", "Send screenshots", "Only when the element list isn't enough. Off sends less data.", ""},
+            {"Assistant permissions", "agent_allow_apps", "bool", "Open apps and links", "", ""},
+            {"Assistant permissions", "agent_allow_contacts", "bool", "Look up contacts", "Asks Android for contacts access.", ""},
+            {"Assistant permissions", "agent_allow_calls", "bool", "Place calls", "Always asks you first. Asks Android for phone access.", ""},
+            {"Assistant permissions", "agent_allow_sms", "bool", "Send text messages", "Always asks you first. Asks Android for SMS access.", ""},
+            {"Assistant permissions", "agent_allow_alarms", "bool", "Alarms, timers and reminders", "", ""},
+            {"Assistant permissions", "agent_allow_calendar", "bool", "Read and add calendar events", "Asks Android for calendar access.", ""},
+            {"Assistant permissions", "agent_allow_notifications", "bool", "Read notifications", "Needs notification access (Setup).", ""},
+            {"Assistant permissions", "agent_allow_zen", "bool", "Send notes and long tasks to Zen", "", ""},
             {"Services", "provider", "choice", "Main service", "Your phone sends the audio straight to this service with your own key.", "OpenAI,Groq"},
             {"Services", "fallback", "choice", "Fallback service", "Tried when the main service fails.", "None,OpenAI,Groq"},
             {"Services", "openai_api_key", "secret", "OpenAI API key", "", ""},
@@ -79,6 +110,9 @@ public class MainActivity extends Activity implements Dictation.Listener {
             "Export your dictionary on the desktop (Settings → Export & import), email it to yourself, and open the attachment here.",
             "Turn on \"Press Enter after pasting\" to send chat messages hands-free.",
             "Search finds any setting and any dictionary word.",
+            "Set a gesture to Assistant and say \"text Sam I'm running late\": it asks before sending anything.",
+            "The assistant's Stop button stays at the top of the screen while it works; the notification has one too.",
+            "Assistant → Action log shows everything the assistant did, and Clear log wipes it.",
     };
 
     private JSONObject settings;
@@ -222,6 +256,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
     private void persist() {
         try {
             Core.save(settings);
+            KeyService.syncEarbuds();
         } catch (Exception e) {
             Toast.makeText(this, "Couldn't save: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -244,6 +279,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
             c.addView(field(f));
         }
         dictionary();
+        actionLog();
         backup();
         if (list.getChildCount() == 0) list.addView(text("Nothing matches \"" + search.getText() + "\".", 14, R.color.muted));
     }
@@ -296,17 +332,21 @@ public class MainActivity extends Activity implements Dictation.Listener {
             s.setOnCheckedChangeListener((v, on) -> {
                 put(key, on);
                 persist();
+                if (on) askFor(key);
             });
             row.addView(s);
-        } else {
+        } else if (!kind.equals("note")) {
             row.addView(text(f[3], 15, R.color.text));
         }
-        if (kind.equals("choice")) {
+        if (kind.equals("earbud")) {
+            String who = earbudTarget();
+            row.addView(text(who == null ? "Android finds no app for the earbud button on this phone; try the play/pause fallback below." : who.equals(getPackageName()) ? "Yes: the earbud button opens steezen-stt." : "Not yet: it opens " + appName(who) + ". Press the earbud button once and pick steezen-stt with \"Always\", or clear that app's defaults (App info → Open by default).", 13, who != null && who.equals(getPackageName()) ? R.color.green : R.color.amber));
+        } else if (kind.equals("choice")) {
             LinearLayout pills = new LinearLayout(this);
             pills.setPadding(0, px(6), 0, 0);
             Object current = settings.opt(key);
             String value = current == null || current == JSONObject.NULL ? "None" : current.toString();
-            for (String option : f[5].split(",")) {
+            for (String option : options(f[5])) {
                 Button b = button(option, option.equals(value), v -> {
                     put(key, option.equals("None") ? JSONObject.NULL : option);
                     persist();
@@ -317,7 +357,7 @@ public class MainActivity extends Activity implements Dictation.Listener {
                 pills.addView(b, lp);
             }
             row.addView(pills);
-        } else if (!kind.equals("bool")) {
+        } else if (kind.equals("secret") || kind.equals("text") || kind.equals("int")) {
             EditText e = new EditText(this);
             e.setSingleLine();
             style(e);
@@ -332,8 +372,88 @@ public class MainActivity extends Activity implements Dictation.Listener {
             });
             row.addView(e, matchWrap(px(6)));
         }
-        if (!f[4].isEmpty()) row.addView(text(f[4], 12, R.color.muted));
+        if (!f[4].isEmpty()) row.addView(text(f[4], kind.equals("note") ? 13 : 12, R.color.muted));
         return row;
+    }
+
+    private List<String> options(String spec) {
+        if (!spec.startsWith("@")) return List.of(spec.split(","));
+        List<String> out = new ArrayList<>();
+        try {
+            JSONArray a = Core.obj("agent_options", null).getJSONArray(spec.substring(1));
+            for (int i = 0; i < a.length(); i++) out.add(a.getString(i));
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private String earbudTarget() {
+        for (String action : VOICE_INTENTS) {
+            android.content.pm.ResolveInfo r = getPackageManager().resolveActivity(new Intent(action), PackageManager.MATCH_DEFAULT_ONLY);
+            if (r != null && r.activityInfo != null && !"android".equals(r.activityInfo.packageName)) return r.activityInfo.packageName;
+        }
+        return null;
+    }
+
+    private String appName(String pkg) {
+        try {
+            return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString();
+        } catch (Exception e) {
+            return pkg;
+        }
+    }
+
+    private void askFor(String key) {
+        String[] perms = PERMS.get(key);
+        if (perms != null) {
+            for (String p : perms) if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(perms, 1);
+                return;
+            }
+        }
+        if ((key.equals("agent_allow_notifications") || key.equals("earbud_media_session")) && !AgentBridge.notificationsEnabled(this)) notificationAccess();
+    }
+
+    private void restricted(String title, String find, Intent settings) {
+        new AlertDialog.Builder(this, R.style.Dialog).setTitle(title)
+                .setMessage("Find " + find + " and turn it on.\n\nIf Android says it is a restricted setting (Android 13 and later, for apps not installed from a store): open the app info page (next button), tap ⋮ → Allow restricted settings, then come back here and try again.")
+                .setPositiveButton("Open settings", (d, w) -> startActivity(settings))
+                .setNeutralButton("App info", (d, w) -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))))
+                .setNegativeButton("Later", null)
+                .show();
+    }
+
+    private void notificationAccess() {
+        restricted("Turn on notification access", "steezen-stt assistant", new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+    }
+
+    private boolean usesAssistant() {
+        for (String k : new String[]{"volume_action", "assistant_action", "earbud_action"}) if (Dictation.ASSISTANT.equals(settings.optString(k))) return true;
+        return false;
+    }
+
+    private void actionLog() {
+        List<String> lines = AgentLog.read(this);
+        if (!matches("assistant action log history clear privacy") || (lines.isEmpty() && !usesAssistant())) return;
+        LinearLayout c = section("Action log", "Assistant action log (" + lines.size() + ")", false);
+        if (lines.isEmpty()) c.addView(text("Nothing yet. Every request and action the assistant takes shows here.", 13, R.color.muted));
+        java.text.DateFormat when = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT);
+        for (int i = lines.size() - 1; i >= Math.max(0, lines.size() - 60); i--) {
+            try {
+                JSONObject e = new JSONObject(lines.get(i));
+                String outcome = e.optString("outcome");
+                int color = Set.of("blocked", "declined", "failed", "crashed").contains(outcome) ? R.color.red : e.optString("kind").equals("request") ? R.color.accent_hi : R.color.text;
+                TextView t = text(when.format(new java.util.Date(e.optLong("time"))) + "  " + e.optString("kind") + " · " + outcome + "\n" + e.optString("text"), 13, color);
+                t.setPadding(0, px(4), 0, px(4));
+                c.addView(t);
+            } catch (Exception ignored) {
+            }
+        }
+        if (!lines.isEmpty()) c.addView(button("Clear log", false, v -> new AlertDialog.Builder(this, R.style.Dialog).setTitle("Clear the action log?").setMessage("This deletes every entry on this phone.")
+                .setPositiveButton("Clear", (d, w) -> {
+                    AgentLog.clear(this);
+                    rebuild();
+                }).setNegativeButton("Cancel", null).show()), matchWrap(px(8)));
     }
 
     private static int parseInt(String s) {
@@ -385,14 +505,13 @@ public class MainActivity extends Activity implements Dictation.Listener {
     private void setup(boolean searching) {
         Object[][] steps = {
                 {"Microphone", checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED, "Grant", (Runnable) () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS}, 0)},
-                {"Volume-down push-to-talk and pasting (accessibility service)", KeyService.enabled(), "Open settings", (Runnable) () -> {
-                    new AlertDialog.Builder(this, R.style.Dialog).setTitle("Turn on the accessibility service")
-                            .setMessage("Find steezen-stt push-to-talk and turn it on.\n\nIf Android says it is a restricted setting: open the app info page (next button), tap ⋮ → Allow restricted settings, then come back here.")
-                            .setPositiveButton("Accessibility settings", (d, w) -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
-                            .setNeutralButton("App info", (d, w) -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))))
-                            .show();
-                }},
+                {"Volume-down push-to-talk and pasting (accessibility service)", KeyService.enabled(), "Open settings", (Runnable) () -> restricted("Turn on the accessibility service", "steezen-stt push-to-talk", new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))},
                 {"Long-press power: default digital assistant", assistantSet(), "Open settings", (Runnable) () -> startActivity(new Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))},
+                {"Assistant: turn on Zen phone control (a second, separate accessibility service)", !usesAssistant() || AgentBridge.enabled(this, AgentService.class), "Open settings", (Runnable) () -> restricted("Turn on Zen phone control", "Zen phone control", new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))},
+                {"Assistant: add your Anthropic API key (Assistant section)", !usesAssistant() || !settings.optString("anthropic_api_key").trim().isEmpty(), "Show", (Runnable) () -> search.setText("Anthropic")},
+                {"Notification access (assistant notifications, earbud fallback)", !(settings.optBoolean("agent_allow_notifications") || settings.optBoolean("earbud_media_session")) || AgentBridge.notificationsEnabled(this), "Open settings", (Runnable) this::notificationAccess},
+                {"Keep running in the background (no battery optimisation)", getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(getPackageName()), "Allow", (Runnable) () -> startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())))},
+                {"Exact reminder times (optional)", !settings.optBoolean("agent_allow_alarms") || !usesAssistant() || getSystemService(AlarmManager.class).canScheduleExactAlarms(), "Allow", (Runnable) () -> startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + getPackageName())))},
         };
         List<Object[]> todo = new ArrayList<>();
         for (Object[] s : steps) if (!(Boolean) s[1] && matches("setup", (String) s[0])) todo.add(s);

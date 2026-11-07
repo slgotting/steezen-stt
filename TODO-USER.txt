@@ -24,3 +24,17 @@
   Needed: Zen → Tools → inbox token (Generate one if it is empty), pasted into steezen-stt → Zen → Zen inbox token.
   Why: the long-press-power gesture uploads recordings to zen.steezen.com/api/capture, which rejects requests without the token once one is set. The desktop app has no field for it, so it was not in the export.
   Status: open
+
+- [ ] Install the 0.6.0 phone app and switch on the assistant
+  Needed: the new APK on the phone, then a few switches only the phone's owner can flip.
+  Why: Assistant mode (Zen phone control) is built, but no phone was connected over adb and the emulator can't run in the build sandbox (no /dev/kvm), so it has not been installed or tried on a device yet.
+  Steps:
+    1. Plug the phone in with USB debugging on and run `scripts/android.sh install`.
+    2. In steezen-stt, set a gesture to Assistant (Gestures section), then follow Setup:
+       - Zen phone control: Accessibility → Zen phone control → on. If Android says "restricted setting": App info → ⋮ → Allow restricted settings, then try again.
+       - Anthropic API key: console.anthropic.com → API keys, paste it under Assistant (or export it from another device in the locked keys group).
+       - Keep running in the background: Allow.
+       - Optional: turn on the Assistant permissions you want (contacts, calls, SMS, calendar, notifications); each asks Android for its permission when switched on.
+    3. Try: "set a timer for one minute", then "open YouTube and search for lo-fi", then "text <someone> test" (it must show a confirmation sheet before sending).
+    4. Earbuds: Gestures → "Does the earbud button reach steezen-stt?" shows where the earbud assist button goes. If it names another app, press the earbud button once and pick steezen-stt → Always. If it says no app, turn on the play/pause fallback.
+  Status: open

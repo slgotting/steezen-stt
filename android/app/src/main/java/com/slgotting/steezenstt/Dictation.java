@@ -13,6 +13,7 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.widget.Toast;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -24,6 +25,13 @@ final class Dictation {
     }
 
     static final String ZEN = "Zen";
+    static final String ASSISTANT = "Assistant";
+    private static final long SILENCE_MS = 1800;
+    private static final long MAX_MS = 120_000;
+    private static final Map<String, String[]> PHASES = Map.of(
+            ZEN, new String[]{"Listening for Zen…", "Sending to Zen…", "zen"},
+            ASSISTANT, new String[]{"Listening for the assistant…", "Understanding…", "hear"});
+    private static final String[] DICTATE = {"Listening…", "Transcribing…", "dictate"};
     static final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static final ExecutorService work = Executors.newSingleThreadExecutor();
@@ -52,8 +60,36 @@ final class Dictation {
         if (s.optBoolean(key)) tones.startTone(tone, 120);
     }
 
+    private static String[] phases(String act) {
+        return PHASES.getOrDefault(act, DICTATE);
+    }
+
+    static boolean handsFree(Context c, String act) {
+        return handsFree(c, act, false);
+    }
+
+    static boolean handsFree(Context c, String act, boolean pasteResult) {
+        if (!start(c, act, pasteResult)) return false;
+        Recorder mine = rec;
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (rec != mine) return;
+                if (silentMs() > SILENCE_MS || elapsedMs() > MAX_MS) stop(c);
+                else main.postDelayed(this, 200);
+            }
+        }, 200);
+        return true;
+    }
+
     static boolean start(Context c, String act, boolean pasteResult) {
         if (rec != null) return false;
+        String problem = ASSISTANT.equals(act) ? AgentBridge.problem(c) : null;
+        if (problem != null) {
+            publish("error", problem);
+            toast(c, problem);
+            return false;
+        }
         if (c.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             toast(c, "steezen-stt needs the microphone permission. Open the app to grant it.");
             return false;
@@ -72,7 +108,7 @@ final class Dictation {
         paste = pasteResult;
         c.getSystemService(Vibrator.class).vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE));
         beep(Core.settings(), "sound_start", ToneGenerator.TONE_PROP_BEEP);
-        publish("recording", ZEN.equals(act) ? "Listening for Zen…" : "Listening…");
+        publish("recording", phases(act)[0]);
         return true;
     }
 
@@ -94,11 +130,11 @@ final class Dictation {
         boolean deliver = paste;
         JSONObject s = Core.settings();
         beep(s, "sound_stop", ToneGenerator.TONE_PROP_BEEP2);
-        publish("working", ZEN.equals(act) ? "Sending to Zen…" : "Transcribing…");
+        publish("working", phases(act)[1]);
         Context app = c.getApplicationContext();
         work.execute(() -> {
             try {
-                JSONObject r = (JSONObject) Core.run(ZEN.equals(act) ? "zen" : "dictate", null, pcm);
+                JSONObject r = (JSONObject) Core.run(phases(act)[2], null, pcm);
                 main.post(() -> done(app, act, deliver, r));
             } catch (Exception e) {
                 main.post(() -> {
@@ -116,6 +152,16 @@ final class Dictation {
         if (ZEN.equals(act)) {
             publish("done", text);
             toast(c, text);
+            return;
+        }
+        if (ASSISTANT.equals(act)) {
+            if (text.trim().isEmpty()) {
+                publish("error", "Nothing heard");
+                toast(c, "Nothing heard");
+                return;
+            }
+            publish("done", "Asked: " + text);
+            AgentBridge.send(c, text);
             return;
         }
         if (text.trim().isEmpty()) {

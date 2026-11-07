@@ -61,10 +61,11 @@ pub enum PhoneAction {
     Off,
     Dictate,
     Zen,
+    Assistant,
 }
 
 impl PhoneAction {
-    pub const ALL: [PhoneAction; 3] = [PhoneAction::Off, PhoneAction::Dictate, PhoneAction::Zen];
+    pub const ALL: [PhoneAction; 4] = [PhoneAction::Off, PhoneAction::Dictate, PhoneAction::Zen, PhoneAction::Assistant];
 }
 
 impl PasteMethod {
@@ -246,6 +247,27 @@ pub struct Settings {
     pub zen_token: String,
     pub volume_action: PhoneAction,
     pub assistant_action: PhoneAction,
+    pub earbud_action: PhoneAction,
+    pub earbud_media_session: bool,
+
+    pub anthropic_api_key: String,
+    pub agent_model: String,
+    pub agent_effort: String,
+    pub agent_max_steps: u32,
+    pub agent_confirm_all: bool,
+    pub agent_speak: bool,
+    pub agent_log: bool,
+    pub agent_allow_screen: bool,
+    pub agent_allow_gestures: bool,
+    pub agent_allow_apps: bool,
+    pub agent_allow_screenshots: bool,
+    pub agent_allow_calls: bool,
+    pub agent_allow_sms: bool,
+    pub agent_allow_contacts: bool,
+    pub agent_allow_calendar: bool,
+    pub agent_allow_alarms: bool,
+    pub agent_allow_notifications: bool,
+    pub agent_allow_zen: bool,
 }
 
 impl Default for Settings {
@@ -304,6 +326,26 @@ impl Default for Settings {
             zen_token: String::new(),
             volume_action: PhoneAction::Dictate,
             assistant_action: PhoneAction::Zen,
+            earbud_action: PhoneAction::Zen,
+            earbud_media_session: false,
+            anthropic_api_key: String::new(),
+            agent_model: "claude-opus-5-5".into(),
+            agent_effort: "low".into(),
+            agent_max_steps: 30,
+            agent_confirm_all: false,
+            agent_speak: true,
+            agent_log: true,
+            agent_allow_screen: true,
+            agent_allow_gestures: true,
+            agent_allow_apps: true,
+            agent_allow_screenshots: false,
+            agent_allow_calls: false,
+            agent_allow_sms: false,
+            agent_allow_contacts: false,
+            agent_allow_calendar: false,
+            agent_allow_alarms: true,
+            agent_allow_notifications: false,
+            agent_allow_zen: true,
         }
     }
 }

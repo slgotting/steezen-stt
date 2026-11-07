@@ -17,6 +17,7 @@ import android.widget.TextView;
 public class KeyService extends AccessibilityService implements Dictation.Listener {
     private static final long HOLD_MS = 350;
     private static KeyService instance;
+    private EarbudSession earbuds;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean started;
     private String action = "Off";
@@ -32,11 +33,24 @@ public class KeyService extends AccessibilityService implements Dictation.Listen
     protected void onServiceConnected() {
         instance = this;
         Dictation.listeners.add(this);
+        earbuds = new EarbudSession(this);
+        syncEarbuds();
+    }
+
+    static void syncEarbuds() {
+        KeyService s = instance;
+        if (s == null || s.earbuds == null) return;
+        try {
+            s.earbuds.sync();
+        } catch (Exception e) {
+            Dictation.toast(s, "Earbud button fallback failed: " + e.getMessage());
+        }
     }
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         Dictation.listeners.remove(this);
+        if (earbuds != null) earbuds.release();
         instance = null;
         return super.onUnbind(intent);
     }

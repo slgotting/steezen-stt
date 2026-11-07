@@ -7,6 +7,7 @@ import org.json.JSONObject;
 
 public class App extends Application {
     static final String CHANNEL = "status";
+    static final String ASSISTANT = "assistant";
 
     @Override
     public void onCreate() {
@@ -15,6 +16,8 @@ public class App extends Application {
             Core.run("init", new JSONObject().put("dir", getFilesDir().getAbsolutePath()), null);
         } catch (Exception ignored) {
         }
-        getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL, "Recording", NotificationManager.IMPORTANCE_LOW));
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Recording", NotificationManager.IMPORTANCE_LOW));
+        nm.createNotificationChannel(new NotificationChannel(ASSISTANT, "Assistant and reminders", NotificationManager.IMPORTANCE_DEFAULT));
     }
 }
