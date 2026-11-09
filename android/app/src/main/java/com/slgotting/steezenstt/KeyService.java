@@ -13,6 +13,10 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.TextView;
+import com.slgotting.steezen.common.Core;
+import com.slgotting.steezen.common.Dictation;
+import com.slgotting.steezen.common.EarbudSession;
+import com.slgotting.steezen.common.R;
 
 public class KeyService extends AccessibilityService implements Dictation.Listener {
     private static final long HOLD_MS = 350;
@@ -22,7 +26,11 @@ public class KeyService extends AccessibilityService implements Dictation.Listen
     private boolean started;
     private String action = "Off";
     private TextView pill;
-    private final Runnable begin = () -> started = Dictation.start(this, action, true);
+    private boolean handedOff;
+    private final Runnable begin = () -> {
+        started = Dictation.start(this, action, true);
+        handedOff = !started && Dictation.ASSISTANT.equals(action);
+    };
     private final Runnable hide = () -> showPill(null, 0);
 
     static boolean enabled() {
@@ -75,7 +83,9 @@ public class KeyService extends AccessibilityService implements Dictation.Listen
         }
         if ("Off".equals(action) && !started) return false;
         handler.removeCallbacks(begin);
-        if (started) {
+        if (handedOff) {
+            handedOff = false;
+        } else if (started) {
             started = false;
             Dictation.stop(this);
         } else {

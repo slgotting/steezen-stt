@@ -266,6 +266,8 @@ pub struct Settings {
     pub agent_allow_contacts: bool,
     pub agent_allow_calendar: bool,
     pub agent_allow_alarms: bool,
+    pub agent_allow_media: bool,
+    pub agent_allow_device: bool,
     pub agent_allow_notifications: bool,
     pub agent_allow_zen: bool,
 }
@@ -344,6 +346,8 @@ impl Default for Settings {
             agent_allow_contacts: false,
             agent_allow_calendar: false,
             agent_allow_alarms: true,
+            agent_allow_media: true,
+            agent_allow_device: true,
             agent_allow_notifications: false,
             agent_allow_zen: true,
         }

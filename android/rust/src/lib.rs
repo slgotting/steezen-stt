@@ -146,7 +146,7 @@ fn agent_step(args: &Value, _: &[u8]) -> Result<Value, String> {
     let s = Settings::load();
     let key = s.anthropic_api_key.trim();
     if key.is_empty() {
-        return Err("Add your Anthropic API key in steezen-stt → Assistant first.".into());
+        return Err("Add your Anthropic API key in Zen Assistant → Assistant first.".into());
     }
     let granted: Vec<&str> = args["granted"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let allowed: Vec<&str> = agent::permissions(&s).into_iter().filter(|p| granted.contains(p)).collect();
@@ -207,7 +207,7 @@ mod jni_bridge {
     use jni::objects::{JByteArray, JClass, JString};
 
     #[unsafe(no_mangle)]
-    pub extern "system" fn Java_com_slgotting_steezenstt_Core_call<'caller>(mut unowned: EnvUnowned<'caller>, _class: JClass<'caller>, method: JString<'caller>, args: JString<'caller>, audio: JByteArray<'caller>) -> JString<'caller> {
+    pub extern "system" fn Java_com_slgotting_steezen_common_Core_call<'caller>(mut unowned: EnvUnowned<'caller>, _class: JClass<'caller>, method: JString<'caller>, args: JString<'caller>, audio: JByteArray<'caller>) -> JString<'caller> {
         unowned
             .with_env(|env| -> Result<_, jni::errors::Error> {
                 let method = method.try_to_string(env)?;

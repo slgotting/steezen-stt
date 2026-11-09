@@ -11,7 +11,7 @@ Native Rust (egui), one binary. Uses about 40 MB of private memory when idle and
 
 ## Layout
 
-A Cargo workspace: `core/` is the shared library (settings, cloud and local transcription, Jev dictionary, formatting, latency, settings export/import), the root crate is the desktop app, and `android/` is the Android app with its JNI bridge in `android/rust/`.
+A Cargo workspace: `core/` is the shared library (settings, cloud and local transcription, Jev dictionary, formatting, latency, settings export/import), the root crate is the desktop app, and `android/` holds the two phone apps (steezen-stt and Zen Assistant, see Android below) with their JNI bridge in `android/rust/`.
 
 ## Build
 
@@ -105,39 +105,60 @@ Everything is configured in **Settings**; changes save automatically to `~/.conf
 
 ### Export & import settings
 
-Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, phone assistant, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. The phone app reads and writes the same file.
+Settings → Export & import writes the groups you tick (dictionary, services & models, output, formatting, sounds, phone, phone assistant, API keys, desktop) to one `.steezen.json` file, for example to email to your phone. API keys and the Zen token are only exported with a passphrase, which locks the whole file (Argon2id + XChaCha20-Poly1305). Import a file by dropping it on the window or typing its path, pick which groups to apply, and either merge the dictionary (new words added, matching words updated) or replace it. Both phone apps read and write the same file.
 
 ## Android
 
-`android/` is the phone app. It runs the same core (cloud transcription with your own key, the Jev dictionary, formatting) through a small JNI bridge, so audio goes straight from the phone to OpenAI or Groq.
+`android/` holds two separate phone apps built from one Gradle project:
+
+| Module | App | Package | What it is |
+|---|---|---|---|
+| `android/app` | **steezen-stt** | `com.slgotting.steezenstt` | Dictation: volume-down push-to-talk, paste into any text box, Zen capture. |
+| `android/assistant` | **Zen Assistant** | `com.slgotting.zenassistant` | A digital assistant that operates the phone for you by voice or text. |
+| `android/common` | (library) | | Recording, the JNI bridge to the Rust core, the power-button/earbud assist gesture, and the settings screen both apps use. |
+
+Both run the same Rust core (`core/` plus `android/rust`, one `libsteezen_mobile.so`), so audio goes straight from the phone to OpenAI or Groq with your own key.
+
+### Why two apps in one repo, not a fork
+
+Zen Assistant is a separate app: it has its own install, icon, settings, permissions and processes, and you can uninstall either one without touching the other. steezen-stt no longer asks for calls, SMS, contacts, calendar or alarms, and no longer contains phone control at all.
+
+They stay in this repository and share code rather than being a fork, because about 80% of what the assistant needs is the speech pipeline: transcription with a fallback service, the Jev dictionary, Zen upload, the settings file and Export & import, the assist gesture, earbud handling and the settings UI. A fork would copy all of that, and every fix (such as the whisper error -6 fix) would have to be made twice and would drift. A Gradle library module gives each app only the shared pieces it uses, so the separation is real at install time and the code is still written once. (The one-repository-per-project rule points the same way.)
+
+### steezen-stt
 
 - **Hold volume-down** in any app: records while held, then pastes the transcript into the focused text box (and presses Enter if that is on). A short press still changes the volume. Needs the *steezen-stt push-to-talk* accessibility service.
 - **Long-press power** (with steezen-stt as the default digital assistant): records until you pause or tap Send.
 - **Earbud assist button** (long-press on most Bluetooth earbuds): Android sends it as a voice-command intent, which steezen-stt handles. Settings → Gestures shows whether this phone routes it to steezen-stt or to another app. For earbuds that only send play/pause, an optional fallback keeps a media session that turns a long press into the gesture and passes short presses on to your music app (needs notification access); it works until another app plays media.
-- Each gesture can be set to **Dictate**, **Zen** (uploads the recording to your Zen inbox at `/api/capture` with your inbox token, and Zen transcribes and routes it), **Assistant** or **Off**.
-
-### Assistant (Zen phone control)
-
-Assistant mode transcribes your request and has Claude operate the phone. It calls the Anthropic API directly from the phone with your own key (Claude Opus 5.5 at low effort by default, with server-side refusal fallback on), so screen steps don't go through a server. Notes, ideas and long tasks go to Zen with `send_to_zen`.
-
-- **A separate service.** The agent is a second accessibility service, *Zen phone control*, in its own process (`:agent`). Push-to-talk is unaffected if it is off or crashes. The agent loop runs under a crash guard, and it pauses itself after 3 errors in 10 minutes.
-- **What it can do:** read the screen (numbered elements), tap, long-press, type, scroll, swipe, Back/Home/Recents/notifications, open apps and links, look up contacts, call, text, set alarms, timers and reminders, read and add calendar events, read notifications, take screenshots (off by default), and send to Zen. Each one is a toggle under *Assistant permissions*, and an Android permission is only asked for when you turn on the toggle that needs it.
-- **Confirmation sheet** before calls, texts, anything that sends or shares, pays or buys, deletes or removes, any tap in Settings or a payment or banking app, and before everything when *Confirm every action* is on. The phone decides this from what is being tapped, not the model. If you decline, the action is not retried another way.
-- **Safety:** it never acts while the phone is locked and stops when the screen turns off. A Stop button stays at the top of the screen and in the notification while it works. It can't read or type password fields, can't act on steezen-stt itself, and only opens https, geo, mailto and market links. Screen text, notifications and messages are passed to Claude as untrusted data, with instructions never to follow text found there. Card numbers are hidden before anything is sent.
-- **Privacy:** only your request and what the current request reads leave the phone, and only to Anthropic. Nothing from the screen is stored. The action log keeps request text, tool names and targets (message text only as a length). It can be turned off and cleared under *Assistant action log*.
-- Answers show in a card, and are read aloud when earbuds or headphones are connected. If it asks a question, tap Answer within 2 minutes to continue the same conversation.
-- Setup lists what is still missing: the Zen phone control service, the Anthropic key, notification access, the battery-optimisation exemption, and exact alarms for reminders. Each step explains Android 13+ "restricted setting" (App info → ⋮ → Allow restricted settings), which sideloaded apps hit for accessibility and notification access.
-- Settings, including the assistant's model, permissions and the Anthropic key, live in the same shared settings file and travel in Export & import. An empty key in an imported file never wipes a key already set.
+- Each gesture can be set to **Dictate**, **Zen** (uploads the recording to your Zen inbox at `/api/capture` with your inbox token, and Zen transcribes and routes it), **Assistant** (hands off to Zen Assistant, which listens and acts) or **Off**.
 - Settings has a search box, a hold-to-dictate test button, a dictionary editor, and the same Export & import as the desktop: Share… sends the file by email or Drive, and opening a `.steezen.json` attachment imports it.
+
+### Zen Assistant
+
+Zen Assistant takes a spoken or typed request and has Claude operate the phone. It calls the Anthropic API directly from the phone with your own key (Claude Opus 5.5 at low effort by default, with server-side refusal fallback on), so screen steps don't go through a server. Notes, ideas and long tasks go to Zen with `send_to_zen`.
+
+- **Ways to ask:** long-press power (with Zen Assistant as the default digital assistant), the earbud assist button, the *Ask Zen* Quick Settings tile, the Ask box and hold-to-ask button at the top of its screen, or steezen-stt's volume-down gesture set to Assistant. Each gesture can be Assistant, Zen or Off; power and earbud start as Assistant.
+- **Its own process.** The agent is an accessibility service, *Zen phone control*, in a separate `:agent` process, with the listening pill, Stop button and confirmation sheet drawn there too. The agent loop runs under a crash guard and pauses itself after 3 errors in 10 minutes.
+- **What it can do:** read the screen (numbered elements), tap, long-press, type, scroll, swipe, Back/Home/Recents/notifications/Quick Settings; open apps and links, search the web, start directions, open the camera; look up contacts, call, text; set alarms, timers and reminders; read and add calendar events; read notifications; play/pause/skip whatever is playing, set any volume, switch the ringer to normal/vibrate/silent; the flashlight; copy to the clipboard; open any settings page (Wi-Fi, Bluetooth, display, Do Not Disturb and more) and change it on screen; take screenshots (off by default); send to Zen. Each group is a toggle under *Assistant permissions*, and an Android permission is only asked for when you turn on the toggle that needs it.
+- **What Android doesn't allow:** apps can't switch Wi-Fi, Bluetooth, mobile data or brightness directly any more (Android 10+), so it opens the settings page or panel and taps the switch, and that tap goes through the confirmation sheet like any settings change. Silent mode needs Do Not Disturb access, which it opens for you the first time.
+- **Confirmation sheet** before calls, texts, anything that sends or shares, pays or buys, deletes or removes, any tap in Settings or a payment or banking app, and before everything when *Confirm every action* is on. The phone decides this from what is being tapped, not the model. If you decline, the action is not retried another way.
+- **Safety:** it never acts while the phone is locked and stops when the screen turns off. A Stop button stays at the top of the screen and in the notification while it works. It can't read or type password fields, can't act on Zen Assistant or steezen-stt themselves, and only opens https, geo, mailto and market links. Screen text, notifications and messages are passed to Claude as untrusted data, with instructions never to follow text found there. Card numbers are hidden before anything is sent.
+- **Privacy:** only your request and what the current request reads leave the phone: the audio to your speech-to-text service, everything else only to Anthropic. Nothing from the screen is stored. The action log keeps request text, tool names and targets (message text only as a length). It can be turned off and cleared under *Action log*.
+- Answers show in a card, and are read aloud when earbuds or headphones are connected. If it asks a question, tap Answer within 2 minutes to continue the same conversation.
+- Setup lists what is still missing: Zen phone control, the Anthropic key, a speech-to-text key, the default-assistant role, notification access, the battery-optimisation exemption, and exact alarms for reminders. Each step explains Android 13+ "restricted setting" (App info → ⋮ → Allow restricted settings), which sideloaded apps hit for accessibility and notification access.
+- Its settings are its own file. To reuse steezen-stt's keys, export them there (keys group, with a passphrase) and open the file in Zen Assistant. An empty key in an imported file never wipes a key already set.
+
+Only one app can be the default digital assistant. Make Zen Assistant the default if the power button should run the assistant, or steezen-stt if it should dictate.
 
 Build and install (needs the Android SDK and NDK 29, `cargo install cargo-ndk`, and the Android Rust targets):
 
 ```sh
-scripts/android.sh          # build android/app/build/outputs/apk/release/app-release.apk
-scripts/android.sh install  # also adb install it on the connected phone
+scripts/android.sh                    # build both APKs
+scripts/android.sh install            # also adb install both on the connected phone
+scripts/android.sh install assistant  # build both, install only Zen Assistant (or: app)
 ```
 
-The APK is signed with the local debug key, for sideloading. Its version follows the root `Cargo.toml`.
+The APKs are signed with the local debug key, for sideloading. steezen-stt's version follows the root `Cargo.toml`; Zen Assistant's is in `android/assistant/VERSION`.
 
 ## Data
 

@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="key_service_description">Hold volume-down to dictate, and paste the transcript into the text box you are typing in (and press Enter when you turn that on). It reads only the focused text box, and only to paste into it.</string>
-    <string name="agent_service_description">Zen phone control lets the steezen-stt assistant act on your phone when you ask it to: read the screen, tap, type, scroll and open apps. It runs only while a request you spoke is in progress, shows a Stop button the whole time, asks before sending, paying, deleting or changing settings, and never acts on the lock screen. Screen content is sent to Claude only for the request in progress and is never stored. Push-to-talk dictation is a separate service and keeps working without this one.</string>
 </resources>

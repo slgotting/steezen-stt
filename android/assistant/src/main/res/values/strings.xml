@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agent_service_description">Zen phone control lets Zen Assistant act on your phone when you ask it to: read the screen, tap, type, scroll and open apps. It runs only while a request you gave is in progress, shows a Stop button the whole time, asks before sending, paying, deleting or changing settings, and never acts on the lock screen. Screen content is sent to Claude only for the request in progress and is never stored.</string>
+</resources>

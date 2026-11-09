@@ -41,7 +41,7 @@ pub const GROUPS: &[Group] = &[
         label: "Phone assistant (model, permissions, log)",
         fields: &[
             "agent_model", "agent_effort", "agent_max_steps", "agent_confirm_all", "agent_speak", "agent_log", "agent_allow_screen", "agent_allow_gestures", "agent_allow_apps", "agent_allow_screenshots",
-            "agent_allow_calls", "agent_allow_sms", "agent_allow_contacts", "agent_allow_calendar", "agent_allow_alarms", "agent_allow_notifications", "agent_allow_zen",
+            "agent_allow_calls", "agent_allow_sms", "agent_allow_contacts", "agent_allow_calendar", "agent_allow_alarms", "agent_allow_media", "agent_allow_device", "agent_allow_notifications", "agent_allow_zen",
         ],
         secret: false,
         desktop_only: false,

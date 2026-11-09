@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.application'
+}
+
+def assistantVersion = new File(projectDir, "VERSION").text.trim()
+
+android {
+    namespace = "com.slgotting.zenassistant"
+    compileSdk = 36
+    defaultConfig {
+        applicationId "com.slgotting.zenassistant"
+        minSdk 30
+        targetSdk 36
+        versionCode versionCodeOf(assistantVersion)
+        versionName assistantVersion
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':common')
+}
